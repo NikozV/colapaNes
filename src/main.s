@@ -34,6 +34,9 @@ ROAD_R    = 192         ; x maximo del auto para seguir en pista
 MAXSPD_HI = 4           ; velocidad maxima (px/frame)
 LAP_LEN   = 3000        ; unidades de distancia por vuelta
 TOTAL_LAPS = 3
+TRACK_CC  = 16          ; columna del centro del asfalto en la recta
+CC_MIN    = 12          ; el circuito no puede correrse mas alla de estos
+CC_MAX    = 20          ; limites sin salirse de las 32 columnas
 
 T_GRASS_A = $01
 T_GRASS_B = $02
@@ -52,8 +55,8 @@ padOld:     .res 1
 gameState:  .res 1
 ctrlSh:     .res 1
 maskSh:     .res 1
-scrollLo:   .res 1
-scrollHi:   .res 1
+scrollLo:   .res 1          ; scroll Y dentro de la nametable de arriba (0..239)
+scrollNT:   .res 1          ; 0 o 2: cual nametable va arriba (bit 1 de PPUCTRL)
 scrollFrac: .res 1
 playerX:    .res 1
 playerXf:   .res 1
@@ -85,10 +88,24 @@ finished:   .res 1
 prgBank:    .res 1          ; banco mapeado hoy en $8000 (el mapper no se lee)
 bankVal:    .res 1          ; prueba de banking: byte leido desde BANK0
 
+; --- circuito dinamico (ver "El circuito en filas" mas abajo) ---
+topRow:     .res 1          ; fila virtual (0..59) donde arranca la pantalla
+lastTop:    .res 1          ; topRow del cuadro anterior, para detectar el cruce
+genRow:     .res 1          ; fila virtual que se esta armando
+genCC:      .res 1          ; columna del centro del asfalto en esa fila
+rowReady:   .res 1          ; hay una fila armada esperando que el NMI la escriba
+rowAddrLo:  .res 1          ; direccion de PPU donde va esa fila
+rowAddrHi:  .res 1
+attrReady:  .res 1          ; idem para la fila de atributos del bloque
+attrAddrLo: .res 1
+attrAddrHi: .res 1
+trkSeg:     .res 1          ; segmento del circuito en curso
+trkLeft:    .res 1          ; bloques que le quedan a ese segmento
+
 ; Exportadas para que tools/probe.py pueda leerlas por nombre desde el emulador
 .exportzp gameState, playerX, spdLo, spdHi, distLo, distHi
 .exportzp lapNum, crashT, offRoad, scrollLo, secs, mins, finished
-.exportzp prgBank, bankVal
+.exportzp prgBank, bankVal, topRow, genCC
 
 .segment "OAM"
 oam:        .res 256
@@ -100,6 +117,14 @@ rivalYHi:   .res 4
 rivalSLo:   .res 4
 rivalSHi:   .res 4
 rivalPal:   .res 4
+
+rowBuf:     .res 32         ; la fila que el NMI va a mandar a la PPU
+attrBuf:    .res 8          ; la fila de atributos del bloque
+rowCC:      .res 60         ; centro del asfalto de cada fila virtual
+
+; rowCC no es zeropage, asi que va con .export y no con .exportzp. Lo lee
+; tools/probe.py para verificar que el circuito curva de verdad.
+.export rowCC
 
 ;=============================================================================
 ; MMC1
@@ -268,8 +293,48 @@ nmi:
     lda #$02
     sta OAMDMA
 
+    ; Fila nueva del circuito, si el bucle principal dejo una lista. Va ANTES
+    ; del scroll: escribir $2006 pisa el latch, asi que el scroll se setea
+    ; ultimo o la pantalla queda corrida.
+    lda rowReady
+    beq @noRow
+    lda #0
+    sta rowReady
+    bit PPUSTATUS
+    lda rowAddrHi
+    sta PPUADDR
+    lda rowAddrLo
+    sta PPUADDR
+    ldx #0
+@rowLp:
+    lda rowBuf,x
+    sta PPUDATA
+    inx
+    cpx #32
+    bne @rowLp
+@noRow:
+
+    lda attrReady
+    beq @noAttr
+    lda #0
+    sta attrReady
+    bit PPUSTATUS
+    lda attrAddrHi
+    sta PPUADDR
+    lda attrAddrLo
+    sta PPUADDR
+    ldx #0
+@attrLp:
+    lda attrBuf,x
+    sta PPUDATA
+    inx
+    cpx #8
+    bne @attrLp
+@noAttr:
+
     bit PPUSTATUS
     lda ctrlSh
+    ora scrollNT            ; que nametable va arriba
     sta PPUCTRL
     lda maskSh
     sta PPUMASK
@@ -522,7 +587,7 @@ GoTitle:
 
     lda #0
     sta scrollLo
-    sta scrollHi
+    sta scrollNT
     sta scrollFrac
     lda #ST_TITLE
     sta gameState
@@ -543,6 +608,12 @@ TitleLogic:
 ;=============================================================================
 StartRace:
     jsr RenderOff
+    lda #0                  ; el circuito arranca en la fila virtual 0
+    sta scrollLo
+    sta scrollNT
+    sta lastTop
+    sta topRow
+    sta rowReady
     jsr DrawTrack
 
     lda #120
@@ -563,7 +634,7 @@ StartRace:
     sta lapNum
     lda #0
     sta scrollLo
-    sta scrollHi
+    sta scrollNT
 
     ; rivales
     ldx #0
@@ -588,106 +659,44 @@ StartRace:
     jsr RenderOn
     rts
 
-; dibuja el circuito en las dos nametables ($2000 y $2800)
+; Dibuja el circuito entero: las 60 filas virtuales de las dos nametables.
+; Usa el mismo BuildRow que la carrera, asi el dibujo inicial y el dinamico no
+; pueden salir distintos. Solo con el rendering apagado.
 DrawTrack:
-    lda #$20
-    sta tmp4                ; high byte base
-    jsr DrawTrackNT
-    lda #$28
-    sta tmp4
-    jsr DrawTrackNT
-
-    ; atributos para ambas
-    lda #$23
-    sta tmp4
-    jsr DrawTrackAttr
-    lda #$2B
-    sta tmp4
-    jsr DrawTrackAttr
-    rts
-
-DrawTrackNT:
-    bit PPUSTATUS
-    lda tmp4
-    sta PPUADDR
-    lda #$00
-    sta PPUADDR
-
+    lda #TRACK_CC
+    sta genCC
     lda #0
-    sta tmp1                ; fila
-@row:
-    ldx #0                  ; columna
-@col:
-    ; grass?
-    cpx #4
-    bcc @grass
-    cpx #28
-    bcs @grass
-    ; piano izquierdo (4,5) / derecho (26,27)
-    cpx #6
-    bcc @curb
-    cpx #26
-    bcs @curb
-    ; asfalto
-    cpx #15
-    bne @road
-    lda tmp1
-    and #1
-    bne @road
-    lda #T_DASH
-    jmp @put
-@road:
-    lda #T_ROAD
-    jmp @put
-@curb:
-    lda tmp1
-    and #1
-    beq :+
-    lda #T_CURB_B
-    jmp @put
-:   lda #T_CURB_A
-    jmp @put
-@grass:
-    txa
-    clc
-    adc tmp1
-    and #3
-    bne :+
-    lda #T_GRASS_B
-    jmp @put
-:   lda #T_GRASS_A
-@put:
-    sta PPUDATA
-    inx
-    cpx #32
-    bne @col
-    inc tmp1
-    lda tmp1
+    sta genRow
+    sta trkSeg
+    lda segLen              ; el primer segmento es recta: dejarlo entero
+    sta trkLeft
+@lp:
+    ; Aca se genera hacia abajo, asi que el bloque arranca en su fila de
+    ; arriba: la 0, 4, ... 24 y la 28.
+    ;
+    ; El relleno inicial NO llama a AdvanceTrack: se larga en recta y las 60
+    ; filas quedan con el mismo centro. Si el trazado avanzara aca, el final
+    ; del buffer no engancharia con el principio y la pista arrancaria con un
+    ; codo. Las curvas empiezan a entrar cuando la carrera arranca.
+    lda genRow
     cmp #30
+    bcc :+
+    sec
+    sbc #30
+:   and #3
     bne @row
+    jsr BuildAttr
+    jsr SetAttrAddr
+    jsr WriteAttrNow
+@row:
+    jsr BuildRow
+    jsr SetRowAddr
+    jsr WriteRowNow
+    inc genRow
+    lda genRow
+    cmp #60
+    bne @lp
     rts
-
-DrawTrackAttr:
-    bit PPUSTATUS
-    lda tmp4
-    sta PPUADDR
-    lda #$C0
-    sta PPUADDR
-    ldy #8                  ; 8 filas de atributos
-@r:
-    ldx #0
-@c:
-    lda attrRow,x
-    sta PPUDATA
-    inx
-    cpx #8
-    bne @c
-    dey
-    bne @r
-    rts
-
-attrRow:
-    .byte $00, $66, $55, $55, $55, $55, $99, $00
 
 ;=============================================================================
 ; LOGICA DE CARRERA
@@ -696,6 +705,7 @@ RaceLogic:
     jsr UpdateTimer
     jsr UpdatePlayer
     jsr UpdateScroll
+    jsr UpdateTrack
     jsr UpdateRivals
     jsr CheckCollisions
     jsr UpdateDistance
@@ -830,21 +840,49 @@ UpdatePlayer:
     lda #208
     sta playerX
 :
-    ; fuera de pista?
+    ; fuera de pista? El circuito se corre, asi que el borde no es fijo: hay
+    ; que mirar donde esta el asfalto a la altura del auto.
     lda #0
     sta offRoad
+    jsr PlayerShift
+    sta tmp3
     lda playerX
+    sec
+    sbc tmp3                ; llevar el auto al marco del circuito recto
     cmp #ROAD_L
-    bcs :+
-    lda #1
-    sta offRoad
-    rts
-:   lda playerX
+    bcc @off
     cmp #ROAD_R+1
     bcc :+
+@off:
     lda #1
     sta offRoad
 :   rts
+
+; A = Y en pantalla -> A = cuanto esta corrido el circuito a esa altura, en
+; pixeles y con signo. Es lo que convierte entre coordenadas de pantalla y
+; coordenadas de pista: en pista el asfalto siempre esta en el mismo lugar.
+ShiftAtY:
+    lsr a
+    lsr a
+    lsr a                   ; fila de tiles dentro de la pantalla
+    clc
+    adc topRow
+    cmp #60
+    bcc :+
+    sbc #60
+:   tax
+    lda rowCC,x
+    sec
+    sbc #TRACK_CC
+    asl a
+    asl a
+    asl a                   ; (centro - centro recto) * 8 px por columna
+    rts
+
+; Lo mismo a la altura del auto, que va siempre fijo en PLAYER_Y
+PlayerShift:
+    lda #PLAYER_Y
+    jmp ShiftAtY
 
 SteerAmount:
     lda spdHi
@@ -865,11 +903,25 @@ SteerAmount:
 :   lda #0
     rts
 
-;------------------------------------------------------------------ scroll
+;=============================================================================
+; EL CIRCUITO EN FILAS
+;
+; Antes las dos nametables se dibujaban identicas una sola vez y no se tocaba
+; la VRAM nunca mas. Eso solo servia para un circuito recto y uniforme: apenas
+; el asfalto se corre de lugar, el truco se cae.
+;
+; Ahora las dos nametables son un buffer circular de 60 filas (2 x 30). El
+; scroll recorre las 480 lineas de las dos, y cada vez que la pantalla avanza
+; 8 px entra una fila nueva por arriba. Esa fila se arma en el bucle principal
+; y la escribe el NMI, que es el unico momento en que se puede tocar la VRAM.
+;
+; Se genera siempre la fila que quedo JUSTO ARRIBA del borde de la pantalla:
+; esta entera fuera de vista, asi que no se ve aparecer. Como 60 es multiplo
+; de 4 y de 2, los patrones del pasto (col+fila mod 4), del piano y de la raya
+; (fila mod 2) siguen encajando cuando el buffer da la vuelta.
+;=============================================================================
+
 ; scroll disminuye => el fondo baja en pantalla => sensacion de avance
-; Las dos nametables son identicas y el patron del asfalto se repite cada
-; 16px (240 es multiplo de 16), asi que alcanza con mantener scroll en 0..239
-; y dejar que el PPU cruce a la nametable de abajo solo: la union no se nota.
 UpdateScroll:
     lda scrollFrac
     sec
@@ -877,11 +929,319 @@ UpdateScroll:
     sta scrollFrac
     lda scrollLo
     sbc spdHi
-    bcs @done               ; sin borrow: sigue en rango
+    bcs @done               ; sin borrow: sigue dentro de la nametable
     clc
-    adc #240                ; se paso de 0 hacia abajo -> envolver
+    adc #240                ; se paso de 0 -> saltar a la otra nametable
+    sta scrollLo
+    lda scrollNT
+    eor #2
+    sta scrollNT
+    rts
 @done:
     sta scrollLo
+    rts
+
+; Si la pantalla cruzo un borde de 8 px, arma la fila que acaba de quedar
+; arriba y la deja lista para el NMI.
+UpdateTrack:
+    lda scrollLo
+    lsr a
+    lsr a
+    lsr a                   ; fila dentro de la nametable (0..29)
+    ldx scrollNT
+    beq :+
+    clc
+    adc #30                 ; la de abajo arranca en la fila virtual 30
+:   sta topRow
+    cmp lastTop
+    beq @rts                ; no cambio de fila: nada que hacer
+    sta lastTop
+
+    sec
+    sbc #1                  ; la de arriba de la pantalla, fuera de vista
+    bpl :+
+    clc
+    adc #60                 ; -1 -> 59
+:   sta genRow
+
+    ; Como se genera hacia arriba, la primera fila que se toca de cada bloque
+    ; es la de abajo: la 3, 7, ... 27 y la 29. Ahi se mueve el circuito y se
+    ; reescriben los atributos; las otras tres filas del bloque heredan el
+    ; mismo centro.
+    cmp #30
+    bcc :+
+    sec
+    sbc #30
+:   cmp #29
+    beq @newBlock
+    and #3
+    cmp #3
+    bne @sameBlock
+@newBlock:
+    jsr AdvanceTrack
+    jsr BuildAttr
+    jsr SetAttrAddr
+    lda #1
+    sta attrReady
+@sameBlock:
+    jsr BuildRow
+    jsr SetRowAddr
+    lda #1
+    sta rowReady
+@rts:
+    rts
+
+; Arma en rowBuf la fila virtual genRow con el asfalto centrado en genCC, y
+; anota el centro en rowCC para que despues se sepa donde estaba la pista.
+;
+; La cuenta es e = columna - centro + 12, o sea la distancia al borde
+; izquierdo del circuito. Con eso el ancho queda fijo y el circuito se corre
+; entero moviendo un solo numero:
+;
+;     e = 0,1    piano izquierdo      e = 11    raya del medio
+;     e = 2..21  asfalto              e = 22,23 piano derecho
+;     fuera      pasto
+;
+; Con genCC = 16 sale exactamente el circuito de siempre: pianos en las
+; columnas 4,5 y 26,27, asfalto de la 6 a la 25 y la raya en la 15.
+BuildRow:
+    ldx genRow
+    lda genCC
+    sta rowCC,x
+
+    ldx #0                  ; columna
+@col:
+    txa
+    sec
+    sbc genCC
+    clc
+    adc #12
+    cmp #24                 ; si se paso (por arriba o por abajo) es pasto
+    bcs @grass
+    cmp #2
+    bcc @curb
+    cmp #22
+    bcs @curb
+    cmp #11
+    bne @road
+    lda genRow              ; la raya del medio va cortada
+    and #1
+    bne @road
+    lda #T_DASH
+    bne @put                ; siempre: T_DASH != 0
+@road:
+    lda #T_ROAD
+    bne @put
+@curb:
+    lda genRow
+    and #1
+    beq @curbA
+    lda #T_CURB_B
+    bne @put
+@curbA:
+    lda #T_CURB_A
+    bne @put
+@grass:
+    txa
+    clc
+    adc genRow
+    and #3
+    bne @grassA
+    lda #T_GRASS_B
+    bne @put
+@grassA:
+    lda #T_GRASS_A
+@put:
+    sta rowBuf,x
+    inx
+    cpx #32
+    bne @col
+    rts
+
+; genRow -> rowAddrHi/rowAddrLo. Las filas 0..29 caen en $2000 y las 30..59
+; en $2800. Como fila*32 = fila*256/8, el byte alto suma fila/8 y el bajo es
+; (fila mod 8)*32: sale sin multiplicar.
+SetRowAddr:
+    lda genRow
+    cmp #30
+    bcc @nt0
+    sec
+    sbc #30
+    ldx #$28
+    bne @calc               ; siempre: $28 != 0
+@nt0:
+    ldx #$20
+@calc:
+    stx rowAddrHi
+    sta tmp1
+    lsr a
+    lsr a
+    lsr a
+    clc
+    adc rowAddrHi
+    sta rowAddrHi
+    lda tmp1
+    and #7
+    asl a
+    asl a
+    asl a
+    asl a
+    asl a
+    sta rowAddrLo
+    rts
+
+;-------------------------------------------------------------- las curvas
+; POR QUE EL CENTRO SE MUEVE DE A 2 TILES Y SOLO CADA 4 FILAS
+;
+; Los atributos del fondo son por bloques de 16x16 px, y un byte de atributos
+; cubre 4 columnas por 4 filas de tiles. El borde entre el pasto y el piano es
+; un cambio de paleta, asi que solo puede caer en un limite de 16 px: por eso
+; el piano mide 2 tiles y por eso el centro se corre de a 2 columnas.
+;
+; Y como el byte cubre 4 filas, el centro tampoco puede cambiar en el medio de
+; esas 4: todas comparten atributo. De ahi que el circuito se mueva un escalon
+; por bloque. La curva queda escalonada, que es como se ven las curvas en la
+; NES de verdad.
+;
+; Ojo con la ultima fila de atributos de cada nametable: 30 filas de tiles no
+; son 8 bloques de 4, son 7 bloques de 4 mas uno de 2 (las filas 28 y 29).
+
+; Circuito: pares (bloques, cuanto se corre el centro por bloque). Arranca y
+; termina en TRACK_CC para que el lazo cierre sin salto.
+segLen:   .byte 12,  2,  8,  4,  8,  2, 10,  2,  6,  2
+segDelta: .byte  0,  2,  0, $FE, 0, $FE, 0,  2,  0,  2
+NUM_SEG = 10
+
+; Corre el centro del circuito un escalon. Se llama una vez por bloque.
+AdvanceTrack:
+    lda trkLeft
+    bne @move
+    inc trkSeg              ; se acabo el segmento: pasar al siguiente
+    lda trkSeg
+    cmp #NUM_SEG
+    bcc :+
+    lda #0
+    sta trkSeg
+:   tax
+    lda segLen,x
+    sta trkLeft
+@move:
+    dec trkLeft
+    ldx trkSeg
+    lda genCC
+    clc
+    adc segDelta,x          ; segDelta es con signo ($FE = -2)
+    cmp #CC_MIN
+    bcs :+
+    lda #CC_MIN
+:   cmp #CC_MAX+1
+    bcc :+
+    lda #CC_MAX
+:   sta genCC
+    rts
+
+; A = columna (par) -> A = paleta de ese grupo de 2 tiles
+ColPal:
+    sec
+    sbc genCC
+    clc
+    adc #12                 ; e, igual que en BuildRow
+    beq @curb               ; e = 0    -> piano izquierdo
+    cmp #22
+    beq @curb               ; e = 22   -> piano derecho
+    cmp #21
+    bcs @grass              ; e > 20 (o negativo, que envuelve alto)
+    cmp #2
+    bcc @grass
+    lda #1                  ; asfalto
+    rts
+@curb:
+    lda #2
+    rts
+@grass:
+    lda #0
+    rts
+
+; Arma en attrBuf los 8 bytes de atributos del bloque, para el centro genCC.
+; Las cuatro filas del bloque comparten centro, asi que la mitad de arriba y
+; la de abajo del byte salen iguales.
+BuildAttr:
+    ldx #0
+@lp:
+    txa
+    asl a
+    asl a                   ; primera columna del byte
+    jsr ColPal
+    sta tmp1
+    txa
+    asl a
+    asl a
+    clc
+    adc #2                  ; segundo par de columnas
+    jsr ColPal
+    asl a
+    asl a
+    ora tmp1                ; nibble bajo = izquierda | derecha<<2
+    sta tmp2
+    asl a
+    asl a
+    asl a
+    asl a
+    ora tmp2                ; el nibble alto repite al bajo
+    sta attrBuf,x
+    inx
+    cpx #8
+    bne @lp
+    rts
+
+; genRow -> direccion de su fila de atributos ($23C0 / $2BC0 + bloque*8)
+SetAttrAddr:
+    lda genRow
+    ldx #$23
+    cmp #30
+    bcc :+
+    sec
+    sbc #30
+    ldx #$2B
+:   stx attrAddrHi
+    lsr a
+    lsr a                   ; bloque 0..7
+    asl a
+    asl a
+    asl a                   ; *8 bytes por fila de atributos
+    clc
+    adc #$C0
+    sta attrAddrLo
+    rts
+
+; Escribe attrBuf en la PPU ya mismo. Solo con el rendering apagado.
+WriteAttrNow:
+    bit PPUSTATUS
+    lda attrAddrHi
+    sta PPUADDR
+    lda attrAddrLo
+    sta PPUADDR
+    ldx #0
+:   lda attrBuf,x
+    sta PPUDATA
+    inx
+    cpx #8
+    bne :-
+    rts
+
+; Escribe rowBuf en la PPU ya mismo. Solo con el rendering apagado.
+WriteRowNow:
+    bit PPUSTATUS
+    lda rowAddrHi
+    sta PPUADDR
+    lda rowAddrLo
+    sta PPUADDR
+    ldx #0
+:   lda rowBuf,x
+    sta PPUDATA
+    inx
+    cpx #32
+    bne :-
     rts
 
 ;----------------------------------------------------------------- rivales
@@ -976,10 +1336,19 @@ UpdateRivals:
 CheckCollisions:
     lda crashT
     bne @rts
+    ; Los rivales viven en coordenadas de pista, asi que el que se convierte
+    ; es el jugador. Comparar su X de pantalla contra la del rival daria
+    ; choques fantasma apenas el circuito se corre.
+    jsr PlayerShift
+    sta tmp4
+    lda playerX
+    sec
+    sbc tmp4
+    sta tmp3                ; jugador en coordenadas de pista
     ldx #0
 @lp:
     ; |playerX - rivalX| < 13 ?
-    lda playerX
+    lda tmp3
     sec
     sbc rivalX,x
     bcs :+
@@ -1012,15 +1381,19 @@ CheckCollisions:
     ; perder la mitad de la velocidad
     lsr spdHi
     ror spdLo
-    ; empujar al costado
-    lda playerX
+    ; Empujar al costado. De que lado quedo se decide en coordenadas de pista
+    ; (tmp3), pero el empujon se aplica sobre la X de pantalla.
+    lda tmp3
     cmp rivalX,x
-    bcs :+
+    bcs @pushR
+    lda playerX
     sec
     sbc #8
     sta playerX
     jmp @snd
-:   clc
+@pushR:
+    lda playerX
+    clc
     adc #8
     sta playerX
 @snd:
@@ -1144,7 +1517,7 @@ GoEnd:
 
     lda #0
     sta scrollLo
-    sta scrollHi
+    sta scrollNT
     lda #ST_END
     sta gameState
 
@@ -1250,14 +1623,20 @@ BuildOAM:
     bcc @rvnext
     txa
     pha
+    ; sacar todo del rival ANTES de llamar a ShiftAtY, que pisa A y X
     lda rivalX,x
-    sta tmp1
+    sta tmp1                ; X en coordenadas de pista
     lda rivalYHi,x
     sta tmp2
     lda rivalPal,x
     clc
     adc #1                  ; paletas 1 o 2
     sta tmp3
+    lda tmp2
+    jsr ShiftAtY            ; los rivales tambien siguen la curva
+    clc
+    adc tmp1
+    sta tmp1                ; -> coordenadas de pantalla
     jsr PutCar
     pla
     tax

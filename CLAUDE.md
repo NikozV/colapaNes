@@ -30,7 +30,8 @@ Lo que hay hoy en la ROM es la **base del motor**, no el juego final:
 - Pantalla de título → carrera de 3 vueltas → pantalla de meta con el tiempo
 - Acelerador, freno, dirección, penalización por irse al pasto
 - 4 rivales genéricos con carril y velocidad aleatorios, colisiones con rebote
-- Scroll vertical infinito, HUD con vuelta actual y velocidad en km/h
+- **Circuito con curvas**, dibujado por filas escritas en el NMI
+- HUD con vuelta actual y velocidad en km/h
 - Motor por canal de ruido atado a la velocidad, blips de vuelta y choque
 
 No hay todavía: qualy, boxes, gomas, ERS, pilotos reales ni clasificación.
@@ -56,9 +57,8 @@ resumen para no arrancar por el lado equivocado:
    8. No intentar el panel lateral fijo: se necesitarían escrituras a la PPU en
    el medio de cada línea de barrido.
 
-Además, **el ERS depende de que existan curvas**, porque la energía se carga
-girando. Las curvas rompen el truco actual del scroll (ver más abajo), así que
-van temprano en el orden de trabajo.
+**El ERS ya tiene dónde cargarse**: las curvas están hechas (fase 1), así que
+la dependencia que las ponía temprano en el orden de trabajo está saldada.
 
 ## Comandos
 
@@ -148,18 +148,61 @@ El NMI hace **solo** trabajo de PPU: DMA de sprites, `PPUCTRL`, `PPUMASK` y el
 scroll. Toda la lógica vive en el bucle principal y deja el buffer de OAM listo
 para el DMA siguiente.
 
-### El truco del scroll
+### El circuito en filas
 
-El scroll vertical es infinito y **no escribe nada en VRAM durante la carrera**.
-Las dos nametables se dibujan idénticas al empezar, y el patrón del asfalto se
-repite cada 16 px. Como 240 es múltiplo de 16, cuando el PPU cruza de una
-nametable a la otra la unión cae siempre en la misma fase del patrón y no se
-ve. Por eso `scrollLo` se mantiene en 0..239 y nunca se toca el bit de
-nametable de `PPUCTRL`.
+Las dos nametables son un **buffer circular de 60 filas** (2 × 30). El scroll
+recorre las 480 líneas de las dos: `scrollLo` es la posición dentro de la de
+arriba (0..239) y `scrollNT` dice cuál va arriba (0 o 2, que es el bit 1 de
+`PPUCTRL`).
 
-Si algún día agregás curvas o cambios de circuito, esto se cae y vas a tener
-que escribir filas nuevas en el NMI. Es el cambio más grande que le podés hacer
-al motor.
+Cada vez que la pantalla avanza 8 px entra una fila nueva por arriba.
+`UpdateTrack` la arma en el bucle principal con `BuildRow` y la deja en
+`rowBuf`; el NMI la escribe en la PPU. Se genera siempre la fila que quedó
+**justo arriba del borde de la pantalla**: está entera fuera de vista, así que
+no se ve aparecer. Como el buffer tiene 60 filas y solo 30 son visibles, la
+costura entre lo más nuevo y lo más viejo cae siempre fuera de pantalla.
+
+Los patrones siguen encajando cuando el buffer da la vuelta porque 60 es
+múltiplo de 4 y de 2: el pasto usa `(columna + fila) mod 4`, y el piano y la
+raya usan `fila mod 2`.
+
+**En el NMI, la fila va antes que el scroll.** Escribir `$2006` pisa el latch
+de scroll, así que si se setea el scroll primero, la pantalla sale corrida.
+
+### Por qué las curvas son escalonadas
+
+El asfalto se corre moviendo un solo número, `genCC`, la columna del centro.
+`BuildRow` calcula `e = columna - genCC + 12` y con eso decide pasto, piano,
+asfalto o raya.
+
+`genCC` **solo se mueve de a 2 columnas y solo en los bordes de bloque de
+atributos**, y eso no es una decisión estética:
+
+- El borde entre pasto y piano es un cambio de paleta, y las paletas de fondo
+  son por bloques de 16 × 16 px. Por eso el piano mide 2 tiles y el centro se
+  corre de a 2 columnas.
+- Un byte de atributos cubre 4 filas de tiles, así que las 4 comparten paleta:
+  el centro no puede cambiar en el medio de un bloque.
+
+Ojo con la última fila de atributos de cada nametable: 30 filas no son 8
+bloques de 4, son **7 bloques de 4 más uno de 2** (las filas 28 y 29).
+
+Como se genera hacia arriba, la primera fila que se toca de cada bloque es la
+de abajo (la 3, 7, ... 27 y la 29): ahí se llama a `AdvanceTrack` y se
+reescriben los atributos. El relleno inicial genera hacia abajo y **no** avanza
+el trazado, para que la largada sea recta y el final del buffer enganche con el
+principio sin un codo.
+
+### Coordenadas de pista y de pantalla
+
+Con el circuito corriéndose, una X en pantalla ya no dice dónde estás respecto
+del asfalto. `ShiftAtY` convierte entre los dos sistemas: devuelve cuánto está
+corrido el circuito a esa altura, leyendo `rowCC`, que guarda el centro de cada
+fila virtual.
+
+Los rivales viven en **coordenadas de pista** (por eso siguen la curva sin
+hacer nada), y el jugador en coordenadas de pantalla. Las colisiones convierten
+al jugador; el chequeo de fuera de pista también.
 
 ### Punto fijo
 
