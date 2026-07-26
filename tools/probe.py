@@ -419,23 +419,32 @@ g.start_race()
 # Con el circuito curvo el borde ya no esta en una X fija. El test recalcula
 # el borde igual que el juego y verifica que offRoad coincida cuadro a cuadro.
 ROAD_L, ROAD_R = 48, 128   # ver ROAD_L/ROAD_R en src/main.s (pista angosta)
-
-
-def espera_offroad(g, top_antes):
-    cc = g.peek(CC_BASE + (top_antes + PLAYER_ROW) % 60)
-    x = g.peek('playerX') - (cc - TRACK_CC) * 8
-    return 0 if ROAD_L <= x <= ROAD_R else 1
-
+# El pit lane (fase 4 etapa 2) es una excepcion: mientras la ventana de
+# distancia esta activa Y el auto esta AHORA sobre esa franja, no cuenta
+# como offRoad (ver UpdatePlayer, el bloque de @dentro). "pitCommitted"
+# (sticky el resto de la ventana) solo afecta el tope de velocidad, no
+# esto: si te vas de la franja angosta del pit lane hacia el pasto de al
+# lado, eso si es offRoad de verdad.
+LAP_LEN = 3000
+PIT_ENTRY_LEN, PIT_EXIT_LEN = 300, 150
+PIT_LANE_L, PIT_LANE_R = 144, 160   # ver PIT_LANE_L/R en src/main.s
 
 mal, vistos = 0, set()
+dist_antes = g.peek('distHi') * 256 + g.peek('distLo')
 for i in range(600):
-    # UpdatePlayer corre antes que UpdateTrack, asi que usa el topRow anterior
+    # UpdatePlayer corre antes que UpdateTrack/UpdateDistance, asi que usa
+    # el topRow y la distancia de ANTES de este cuadro.
     top_antes = g.peek('topRow')
     g.run(1, A | (LEFT if (i // 75) % 2 == 0 else RIGHT))
-    e = espera_offroad(g, top_antes)
+    cc = g.peek(CC_BASE + (top_antes + PLAYER_ROW) % 60)
+    x = g.peek('playerX') - (cc - TRACK_CC) * 8
+    ventana = dist_antes >= LAP_LEN - PIT_ENTRY_LEN or dist_antes < PIT_EXIT_LEN
+    en_boxes = ventana and PIT_LANE_L <= x < PIT_LANE_R
+    e = 0 if en_boxes else (0 if ROAD_L <= x <= ROAD_R else 1)
     vistos.add(e)
     if g.peek('offRoad') != e:
         mal += 1
+    dist_antes = g.peek('distHi') * 256 + g.peek('distLo')
 check(mal == 0, f'offRoad sigue el borde del asfalto curvado ({mal} cuadros mal de 600)')
 check(vistos == {0, 1}, f'el barrido paso por dentro y por fuera de la pista {sorted(vistos)}')
 
@@ -536,13 +545,56 @@ for _ in range(300):
         mal += 1
 check(mal == 0, f"en pista la velocidad nunca supera el tope dinamico ({mal} cuadros mal)")
 
-# regla de los dos compuestos: sin cambiar de goma (todavia no hay boxes,
-# fase 4 etapa 2), usedMask se queda con un solo bit prendido toda la
-# carrera -- la condicion que GoEnd usa para descalificar. La pantalla en
-# si (texto "DESCALIFICADO: 1 GOMA" vs "PRESS START") se verifico a ojo con
-# capturas (make shots), forzando usedMask con y sin un segundo compuesto.
+# regla de los dos compuestos: sin el menu de boxes para cambiar de goma
+# (todavia no existe, llega en la etapa 3), usedMask se queda con un solo
+# bit prendido toda la carrera -- la condicion que GoEnd usa para
+# descalificar. La pantalla en si (texto "DESCALIFICADO: 1 GOMA" vs "PRESS
+# START") se verifico a ojo con capturas (make shots), forzando usedMask
+# con y sin un segundo compuesto.
 check(bin(g.peek('usedMask')).count('1') == 1,
-      f"sin boxes, usedMask se queda en un solo compuesto (usedMask={g.peek('usedMask')})")
+      f"sin poder cambiar de goma, usedMask se queda en un solo compuesto (usedMask={g.peek('usedMask')})")
+
+print('\n== Boxes (pit lane) ==')
+g = Game()
+g.start_race()
+# el auto arranca en la parrilla con distancia ~0: la ventana de boxes
+# (dist < PIT_EXIT_LEN) ya esta activa desde el primer cuadro, asi que
+# alcanza con dirigirse a la franja (columnas de piano derecho) mientras el
+# circuito todavia va derecho.
+PIT_LANE_L, PIT_LANE_R = 144, 160   # ver PIT_LANE_L/R en src/main.s
+PIT_CAP = 4 * 256 * 60 // 100       # MAXSPD_HI*256*PIT_LIMIT_PCT/100
+PIT_PENALTY_SECS = 5
+centro_boxes = (PIT_LANE_L + PIT_LANE_R) // 2
+
+entro = False
+for _ in range(200):
+    g.drive(1, target=centro_boxes)
+    if g.peek('inPit'):
+        entro = True
+        break
+check(entro, 'el auto entra a boxes al meterse en la franja durante la ventana')
+check(g.peek('pitCommitted') == 1, 'queda comprometido apenas toca la franja')
+check(g.peek('offRoad') == 0, 'estar en boxes no cuenta como salida de pista')
+
+mal = 0
+for _ in range(60):
+    g.drive(1, target=centro_boxes)
+    spd = g.peek('spdHi') * 256 + g.peek('spdLo')
+    if spd > PIT_CAP:
+        mal += 1
+check(mal == 0, f'el limite de boxes clampea la velocidad ({mal} cuadros por encima)')
+check(g.peek('penaltySecs') >= PIT_PENALTY_SECS,
+      f"pasarse del limite en boxes suma una penalidad (penaltySecs={g.peek('penaltySecs')})")
+
+# salir de la franja hacia el asfalto SIN dejar que termine la ventana
+# (dist < PIT_EXIT_LEN todavia): pitCommitted tiene que seguir prendido --
+# comprometido es comprometido para el resto de la ventana, no solo
+# mientras se pisa la franja.
+dist_antes = g.peek('distHi') * 256 + g.peek('distLo')
+g.drive(3, target=87)   # PLAYER_X0, volver al asfalto
+dist_ahora = g.peek('distHi') * 256 + g.peek('distLo')
+assert dist_ahora < 150, f"la ventana ya termino (dist={dist_ahora}), ajustar el bloque de arriba"
+check(g.peek('pitCommitted') == 1, 'sigue comprometido al volver al asfalto dentro de la ventana')
 
 print('\n== Vueltas y meta ==')
 g = Game()

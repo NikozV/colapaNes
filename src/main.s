@@ -120,7 +120,28 @@ WBAND_0   = 100             ; desgaste 0-49
 WBAND_1   = 95              ; 50-74
 WBAND_2   = 88              ; 75-89
 WBAND_3   = 75              ; 90-99
-WBAND_4   = 60              ; 100, pinchado
+PIT_LIMIT_PCT = 60          ; limite de velocidad en el pit lane, ver mas abajo
+WBAND_4   = PIT_LIMIT_PCT   ; 100, pinchado: mismo % que el limite de boxes
+
+; --- boxes (fase 4 etapa 2) ---
+; El motor separa "distancia" (distLo/Hi, entero, marca las vueltas) de
+; "scroll visual" (rowCC/genCC, con fraccion), y no hay una fila fija del
+; circuito que corresponda siempre a la linea de largada (ver el plan de la
+; fase). Sin eso, el pit lane no se puede clavar en un punto geometrico
+; fijo: en cambio se dibuja como una VENTANA DE DISTANCIA alrededor del
+; cruce de vuelta, aproximacion valida porque una fila se genera justo
+; antes de entrar en pantalla (el desvio entre distancia y scroll es chico
+; dentro de una sola vuelta).
+PIT_ENTRY_LEN = 300      ; ventana de entrada: ultimas 300 unidades de la vuelta
+PIT_EXIT_LEN  = 150      ; ventana de salida: primeras 150 de la vuelta siguiente
+; Franja del pit lane: reemplaza el piano DERECHO (e=14,15 en BuildRow) --
+; nunca el izquierdo, los boxes son de un solo lado. En el marco "recto" de
+; PlayerShift (el mismo que usa ROAD_L/ROAD_R) esas dos columnas caen en
+; [144,160): mismo calculo que BuildRow, (e+TRACK_CC-TRACK_HW)*8.
+PIT_LANE_L = (14+TRACK_CC-TRACK_HW)*8
+PIT_LANE_R = (16+TRACK_CC-TRACK_HW)*8
+PIT_CAP = MAXSPD_HI*256*PIT_LIMIT_PCT/100   ; tope de velocidad en boxes, 8.8
+PIT_PENALTY_SECS = 5     ; por pasarse del limite estando comprometido
 
 T_GRASS_A = $01
 T_GRASS_B = $02
@@ -130,6 +151,8 @@ T_CURB_A  = $05
 T_CURB_B  = $06
 T_EDGE    = $07
 T_GRAVEL  = $08
+T_PIT_A   = $09
+T_PIT_B   = $0A
 
 .segment "ZEROPAGE"
 nmiFlag:    .res 1
@@ -227,6 +250,12 @@ lapOffRoad:   .res 1        ; se salio de pista en algun cuadro de esta vuelta
 lapCrash:     .res 1        ; hubo un choque esta vuelta
 lapHardBrake: .res 1        ; freno fuerte a alta velocidad esta vuelta
 
+; boxes (fase 4 etapa 2)
+inPit:        .res 1        ; el auto esta AHORA sobre la franja de boxes
+pitCommitted: .res 1        ; entro a boxes esta ventana: limite de 60% el resto
+pitPenalized: .res 1        ; ya se le sumo la penalidad de esta parada
+penaltySecs:  .res 1        ; segundos de penalidad, se suman al tiempo en GoEnd
+
 ; Exportadas para que tools/probe.py pueda leerlas por nombre desde el emulador
 .exportzp gameState, playerX, spdLo, spdHi, distLo, distHi
 .exportzp lapNum, crashT, offRoad, scrollLo, secs, mins, finished
@@ -235,6 +264,7 @@ lapHardBrake: .res 1        ; freno fuerte a alta velocidad esta vuelta
 .exportzp lapFrameLo, lapFrameHi, lapValid, offRoadBad, qualyLap
 .exportzp startRamp, launchSpd
 .exportzp tireCompound, tireWear, usedMask, curCapHi, curCapLo
+.exportzp inPit, pitCommitted, penaltySecs
 
 .segment "OAM"
 oam:        .res 256
@@ -1087,6 +1117,10 @@ GoQualy:
     sta lapOffRoad
     sta lapCrash
     sta lapHardBrake
+    sta inPit
+    sta pitCommitted
+    sta pitPenalized
+    sta penaltySecs
     jsr RecalcCap
 
     lda #ST_QUALY
@@ -1696,6 +1730,13 @@ StartRace:
     sta usedMask
     jsr RecalcCap
 
+    ; boxes
+    lda #0
+    sta inPit
+    sta pitCommitted
+    sta pitPenalized
+    sta penaltySecs
+
     ; --- la parrilla ---
     ; Se larga desde el puesto que salio de la qualy: orderTable ya viene
     ; ordenada por tiempo (SortByQualy), asi que el que quedo primero arranca
@@ -1958,6 +1999,37 @@ UpdatePlayer:
     sta spdLo
 @spdok:
 
+    ; boxes: limite de velocidad aparte del de las gomas, se aplica ademas
+    ; (el mas restrictivo de los dos gana, porque los dos son clamps sobre
+    ; el mismo par spdHi/spdLo). pitCommitted es del cuadro ANTERIOR --
+    ; mismo desfasaje de un cuadro que offRoad, que se lee arriba y se
+    ; recalcula mas abajo en esta misma rutina.
+    lda pitCommitted
+    beq @nopitclamp
+    lda spdHi
+    cmp #>PIT_CAP
+    bcc @nopitclamp
+    bne @pitclampgo
+    lda spdLo
+    cmp #<PIT_CAP
+    bcc @nopitclamp
+@pitclampgo:
+    ; se excedio del limite: penalidad, una sola vez por parada
+    lda pitPenalized
+    bne @noclampsecs
+    lda #1
+    sta pitPenalized
+    lda penaltySecs
+    clc
+    adc #PIT_PENALTY_SECS
+    sta penaltySecs
+@noclampsecs:
+    lda #>PIT_CAP
+    sta spdHi
+    lda #<PIT_CAP
+    sta spdLo
+@nopitclamp:
+
     ; direccion (mas agil a mas velocidad)
     lda pad1
     and #BTN_LEFT
@@ -2029,6 +2101,34 @@ UpdatePlayer:
     lda #1
     sta offRoadBad
 @dentro:
+    ; boxes: franja de pit lane (piano derecho durante la ventana, ver
+    ; BuildRow/PitWindowActive), en el mismo marco recto que tmp4. inPit es
+    ; del cuadro actual; pitCommitted queda prendido el resto de la ventana
+    ; apenas se toca la franja una vez (y se resetea recien cuando la
+    ; ventana termina, junto con pitPenalized).
+    jsr PitWindowActive
+    sta tmp1
+    lda #0
+    sta inPit
+    lda tmp1
+    beq @winoff
+    lda tmp4
+    cmp #PIT_LANE_L
+    bcc @rtspit
+    cmp #PIT_LANE_R
+    bcs @rtspit
+    lda #1
+    sta inPit
+    sta pitCommitted
+    lda #0
+    sta offRoad              ; el pit lane es un camino legitimo, no cuenta
+    sta offRoadBad           ; como salida de pista (ni penaliza ni desgasta)
+    jmp @rtspit
+@winoff:
+    lda #0
+    sta pitCommitted
+    sta pitPenalized
+@rtspit:
     rts
 
 ; A = Y en pantalla -> A = cuanto esta corrido el circuito a esa altura, en
@@ -2182,6 +2282,11 @@ BuildRow:
     lda genCC
     sta rowCC,x
 
+    ; ventana de boxes activa para ESTA fila? (ver PitWindowActive). Se
+    ; calcula una sola vez por fila, no por columna.
+    jsr PitWindowActive
+    sta tmp1
+
     ldx #0                  ; columna
 @col:
     txa
@@ -2194,7 +2299,7 @@ BuildRow:
     cmp #2
     bcc @curb
     cmp #2*TRACK_HW-2
-    bcs @curb
+    bcs @curbR
     cmp #TRACK_HW-1         ; la raya del medio
     bne @road
     lda genRow              ; la raya del medio va cortada
@@ -2204,6 +2309,20 @@ BuildRow:
     bne @put                ; siempre: T_DASH != 0
 @road:
     lda #T_ROAD
+    bne @put
+; piano DERECHO (e=14,15): durante la ventana de boxes es la franja de pit
+; lane en vez de piano normal. El izquierdo (e=0,1) nunca lo es: los boxes
+; son de un solo lado.
+@curbR:
+    lda tmp1
+    beq @curb
+    lda genRow
+    and #1
+    beq @pitA
+    lda #T_PIT_B
+    bne @put
+@pitA:
+    lda #T_PIT_A
     bne @put
 @curb:
     lda genRow
@@ -2756,6 +2875,37 @@ WearTick:
     sta lapCrash
     sta lapHardBrake
     jmp RecalcCap             ; termina con el rts de RecalcCap
+
+;=============================================================================
+; BOXES
+;=============================================================================
+
+; A = 1 si distLo/Hi cae en la ventana de boxes (los ultimos PIT_ENTRY_LEN
+; del final de la vuelta, o los primeros PIT_EXIT_LEN de la siguiente),
+; A = 0 si no. La usan BuildRow (para dibujar la franja) y UpdatePlayer
+; (para decidir inPit/pitCommitted): una sola cuenta, no dos copias.
+PitWindowActive:
+    lda distHi
+    cmp #>(LAP_LEN-PIT_ENTRY_LEN)
+    bcc @chk2
+    bne @yes
+    lda distLo
+    cmp #<(LAP_LEN-PIT_ENTRY_LEN)
+    bcc @chk2
+@yes:
+    lda #1
+    rts
+@chk2:
+    lda distHi
+    bne @no
+    lda distLo
+    cmp #PIT_EXIT_LEN
+    bcs @no
+    lda #1
+    rts
+@no:
+    lda #0
+    rts
 
 UpdateDistance:
     lda finished
@@ -3385,6 +3535,25 @@ GoEnd:
     inx
     cpx #4
     bne @txt
+
+    ; boxes: sumar las penalidades (exceder el limite del pit lane) antes de
+    ; mostrar el tiempo, no despues -- mins/secs tienen que reflejarlas.
+    lda penaltySecs
+    beq @nopenalty
+    lda secs
+    clc
+    adc penaltySecs
+    sta secs
+@wrapmin:
+    lda secs
+    cmp #60
+    bcc @nopenalty
+    sec
+    sbc #60
+    sta secs
+    inc mins
+    jmp @wrapmin
+@nopenalty:
 
     ; tiempo final: M:SS en $21EE
     bit PPUSTATUS

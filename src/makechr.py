@@ -157,6 +157,16 @@ GRAVEL = tile([
  "33333.33",
 ])
 
+# Carril de boxes (fase 4): reemplaza al piano derecho durante la ventana de
+# entrada/salida (ver PitWindowActive en src/main.s). Blanco y negro en vez
+# del rojo/blanco del piano, para que se lea distinto a simple vista; misma
+# paleta que el piano (indice 2), asi que no hace falta tocar atributos.
+# OJO: el color 3 de esa paleta es $00, el MISMO gris que usa el asfalto
+# (palette[1][1]) -- alternar con ese color se ve identico a la pista y no
+# sirve. El color 0 (negro $0F, universal para fondo) si contrasta.
+PIT_A = tile(["22222222"] * 8)   # blanco
+PIT_B = tile(["........"] * 8)   # negro ($0F, universal de fondo)
+
 TILES_BG[0x01] = GRASS_A
 TILES_BG[0x02] = GRASS_B
 TILES_BG[0x08] = GRAVEL
@@ -165,6 +175,8 @@ TILES_BG[0x04] = ROAD_DASH
 TILES_BG[0x05] = CURB_A
 TILES_BG[0x06] = CURB_B
 TILES_BG[0x07] = ROAD_EDGE_L
+TILES_BG[0x09] = PIT_A
+TILES_BG[0x0A] = PIT_B
 add_font(TILES_BG)
 
 # ---------------------------------------------------------------- sprites

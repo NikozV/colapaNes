@@ -110,7 +110,22 @@ Pendiente para cuando existan los boxes (fase 4): la franja angosta que
 sobra deja lugar de sobra para el pit lane, que era el motivo original del
 pedido.
 
-## 7. Sprites sueltos en la pantalla de meta (preexistente, no de fase 4)
+## 7. El pit lane es una ventana de distancia, no un lugar fijo del circuito
+
+El motor separa "distancia" (`distLo/Hi`, entero, marca las vueltas) de
+"scroll visual" (`rowCC`/`genCC`, con fraccion) y no hay una fila fija del
+buffer de 60 que corresponda siempre a la linea de largada -- clavar el pit
+lane en un punto geometrico exacto hubiera exigido unificar esas dos escalas,
+un cambio de arquitectura mucho mayor que esta fase. En cambio
+`PitWindowActive` mira `distLo/Hi` directamente: la franja se dibuja (y se
+puede pisar) en los ultimos 300 unidades de cada vuelta y los primeros 150 de
+la siguiente. Funciona porque una fila se genera justo antes de entrar en
+pantalla, asi que el desvio entre distancia y scroll es chico dentro de una
+sola vuelta -- pero es una aproximacion, no una pista fisica: la ventana se
+abre igual en la qualy (arranca en distancia 0) y en cada vuelta de la
+carrera, no en un unico punto del trazado.
+
+## 8. Sprites sueltos en la pantalla de meta (preexistente, no de fase 4)
 
 `RaceLogic` no corta cuando `UpdateDistance` marca `finished=1` y llama a
 `GoEnd` (que apaga el render, dibuja la pantalla final y oculta todos los
