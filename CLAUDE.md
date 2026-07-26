@@ -148,12 +148,19 @@ Estas son las que más se olvidan y las que más bugs generan:
   por eso el código resta 1.
 - La paleta es la del NES: 64 colores fijos, sin RGB libre. `$12` azul Alpine,
   `$16` rojo, `$10` gris plata, `$0F` negro.
-- **El texto de sprites va en negro**, no en el naranja del fondo. El HUD y la
-  ventana de posiciones se dibujan encima de la pista, donde el fondo cambia
-  todo el tiempo (pasto verde, piano rojo, piano blanco, asfalto gris): ningún
-  color claro se lee sobre el rojo **y** el blanco a la vez. El negro es el
-  único que contrasta contra los cuatro. La fuente de fondo sigue naranja
-  porque sus pantallas (título, clasificación, meta) son sobre negro.
+- **El texto de sprites es blanco sobre el tile relleno de negro**, no una
+  letra suelta de color. El HUD y la ventana de posiciones se dibujan encima
+  de la pista, donde el fondo cambia todo el tiempo (pasto verde, piano rojo,
+  piano blanco, asfalto gris, grava): una letra sin fondo, de cualquier color,
+  siempre pierde contra alguno de esos. Rellenar el tile hace que cada línea
+  forme una barra negra continua **sin gastar un solo sprite de más**, y
+  blanco sobre negro es el máximo contraste de luminancia posible — que es lo
+  único que sirve si no se distinguen bien los colores (el usuario es
+  daltónico). Consecuencia: los caracteres tienen que ir **pegados de a 8 px**,
+  porque cualquier hueco en X deja ver la pista en el medio de la barra; para
+  separar se usa un espacio de verdad, que ahora es un tile negro sólido. La
+  fuente de fondo sigue naranja y transparente porque sus pantallas (título,
+  clasificación, meta) ya son sobre negro.
 - Los atributos de fondo son por bloques de 16x16 px, así que un cambio de
   paleta no puede caer en el medio de un bloque. El piano mide 2 tiles de ancho
   justamente por eso.

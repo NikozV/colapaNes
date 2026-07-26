@@ -168,6 +168,31 @@ for _ in range(400):
 check(autos_mal == 0, f'los autos en pantalla son rivales reales de la carrera ({autos_mal} cuadros mal)')
 check(autos_max >= 2, f'se ven varios rivales a la vez (maximo simultaneo: {autos_max})')
 
+# Los pilotos de jerarquia tienen que pelear el paso mas que el fondo de
+# parrilla: es lo que hace que pasar a un Verstappen cueste y pasar a un
+# colista no. defBonus sale de la habilidad, no del ritmo del auto.
+DEF_BASE = g.labels['defBonus']
+VER_SLOT, LIN_SLOT = 4, 13
+def_ver = g.peek(DEF_BASE + VER_SLOT)
+def_lin = g.peek(DEF_BASE + LIN_SLOT)
+def_col = g.peek(DEF_BASE + PLAYER_SLOT)
+check(def_ver > def_lin,
+      f'los pilotos de jerarquia defienden mas (VER={def_ver}, LIN={def_lin})')
+check(def_col == 0, f'el jugador no tiene bonus de defensa (COL={def_col})')
+
+# Y el ritmo de la IA tiene que estar montado alrededor del rendimiento real
+# del jugador, no por debajo: si el mejor rival fuera mas lento que un
+# jugador limpio, se ganaria siempre pasara lo que pasara (paso dos veces).
+# Medido: manejando limpio el jugador rinde ~3.8 unidades/cuadro, o sea
+# ~205 en las unidades de paceLo con AIPACE_HI=3.
+mejor_pace = max(g.peek(teamPaceBase + i) for i in range(NUM_DRIVERS) if i != PLAYER_SLOT)
+mejor_con_defensa = max(g.peek(teamPaceBase + i) + g.peek(DEF_BASE + i)
+                        for i in range(NUM_DRIVERS) if i != PLAYER_SLOT)
+check(mejor_pace < 205,
+      f'ningun rival corre mas rapido que un jugador limpio ({mejor_pace} < 205)')
+check(mejor_con_defensa > 205,
+      f'los de arriba defendiendo si lo superan ({mejor_con_defensa} > 205)')
+
 print('\n== El scroll se mueve ==')
 s0 = g.peek('scrollLo')
 g.run(5, A)

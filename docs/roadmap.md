@@ -69,9 +69,11 @@ completa (fase 2). Lo que quedo pendiente:
   segun el circuito ni condiciones de carrera (solo un reroll chico por
   vuelta, ver `ApplyLapVariation`). Cuando existan gomas (fase 4) el pace
   real va a depender del desgaste, no solo de la tabla estatica.
-- **La IA no reacciona al jugador**: no defiende, no se equivoca, no frena
-  detras de otro auto. Avanza a ritmo constante pase lo que pase. Los autos
-  se pueden superponer entre si en pantalla (solo el jugador colisiona).
+- **La IA defiende pero nada mas**: cuando el jugador se le acerca aprieta
+  segun su habilidad (defBonusTab), y con eso alcanza para que pasar a un
+  Verstappen cueste. Pero no se equivoca nunca, no frena detras de otro auto,
+  no pelea entre ellos y no cambia de carril. Los autos se pueden superponer
+  entre si en pantalla: solo el jugador colisiona.
 - **El carril de cada auto sale de su indice de piloto**, no de una decision
   de carrera: dos rivales que corren juntos siempre van a estar en los mismos
   dos carriles. Alcanza para que no se tapen, pero no hay lucha por la linea.

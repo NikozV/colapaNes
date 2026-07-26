@@ -71,18 +71,22 @@ FONT = {
 'Z': ["XXXXX","    X","   X ","  X  "," X   ","X    ","XXXXX"],
 }
 
-def font_tile(ch, color='3'):
+def font_tile(ch, color='3', bg=None):
+    """bg=None deja el tile transparente alrededor de la letra. Con bg se
+    rellena el tile entero de ese color, y las letras de una linea quedan
+    pegadas formando una barra continua."""
     g = FONT[ch]
+    fill = bg if bg is not None else '.'
     rows = []
     for y in range(8):
         src = g[y] if y < 7 else "     "
-        line = "".join(color if c == 'X' else '.' for c in src)
-        rows.append("." + line + "..")
+        line = "".join(color if c == 'X' else fill for c in src)
+        rows.append(fill + line + fill * 2)
     return tile(rows)
 
-def add_font(target, color='3'):
+def add_font(target, color='3', bg=None):
     for ch in FONT:
-        target[ord(ch)] = font_tile(ch, color)
+        target[ord(ch)] = font_tile(ch, color, bg)
 
 # ---------------------------------------------------------------- fondo
 GRASS_A = tile([
@@ -197,14 +201,22 @@ car_tiles = metasprite(CAR)
 for i, t in enumerate(car_tiles):
     TILES_SPR[0x80 + i] = t
 
-# La fuente de SPRITES va en el color 2 de su paleta, que en la paleta 3 es
-# $0F (negro). El HUD y la ventana de posiciones se dibujan encima de la
-# pista, y ahi el fondo cambia todo el tiempo: pasto verde, piano rojo,
-# piano blanco y asfalto gris. Ningun color claro se lee sobre el rojo Y el
-# blanco a la vez -- el negro es el unico que contrasta contra los cuatro.
-# La fuente de FONDO sigue en el color 3 (naranja), que es la de las
-# pantallas de titulo, clasificacion y meta, todas sobre negro.
-add_font(TILES_SPR, color='2')
+# La fuente de SPRITES: letra BLANCA (color 1 = $30) sobre el tile relleno de
+# NEGRO (color 2 = $0F en la paleta 3).
+#
+# El HUD y la ventana de posiciones se dibujan encima de la pista, donde el
+# fondo cambia todo el tiempo: pasto verde, piano rojo, piano blanco, asfalto
+# gris y grava. Dejar la letra sola, de cualquier color, siempre pierde contra
+# alguno de esos fondos. Rellenando el tile el texto se lee igual de bien
+# sobre cualquier cosa, y como los tiles quedan pegados entre si cada linea
+# forma una barra negra continua, sin gastar un solo sprite de mas.
+#
+# Blanco sobre negro es ademas el maximo contraste de LUMINANCIA posible, que
+# es lo unico que sirve si no se distinguen bien los colores.
+#
+# La fuente de FONDO sigue naranja y transparente: sus pantallas (titulo,
+# clasificacion, meta) ya son sobre negro.
+add_font(TILES_SPR, color='1', bg='2')
 
 # ---------------------------------------------------------------- armado
 def build(d):
