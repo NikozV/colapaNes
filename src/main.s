@@ -1,13 +1,16 @@
 ;=============================================================================
 ;  GRAN PREMIO NES  -  Franco Colapinto / Alpine #43
-;  NROM (mapper 0), 16KB PRG + 8KB CHR, NTSC
+;  MMC1 / SxROM (mapper 1), 128KB PRG + 32KB CHR, NTSC
+;
+;  El PRG queda en modo 3: $8000-$BFFF conmutable (BANK0..BANK6) y
+;  $C000-$FFFF fijo en el ultimo banco (CORE, CODE, RODATA, VECTORS).
 ;=============================================================================
 
 .segment "HEADER"
     .byte "NES", $1A
-    .byte 1                 ; 16KB PRG
-    .byte 1                 ; 8KB CHR
-    .byte $00               ; mirroring horizontal (nametables en vertical)
+    .byte 8                 ; 128KB PRG (unidades de 16KB)
+    .byte 4                 ; 32KB CHR  (unidades de 8KB)
+    .byte $10               ; nibble alto = mapper 1, mirroring horizontal
     .byte $00
     .res 8, 0
 
@@ -79,10 +82,13 @@ dig0:       .res 1
 dig1:       .res 1
 dig2:       .res 1
 finished:   .res 1
+prgBank:    .res 1          ; banco mapeado hoy en $8000 (el mapper no se lee)
+bankVal:    .res 1          ; prueba de banking: byte leido desde BANK0
 
 ; Exportadas para que tools/probe.py pueda leerlas por nombre desde el emulador
 .exportzp gameState, playerX, spdLo, spdHi, distLo, distHi
 .exportzp lapNum, crashT, offRoad, scrollLo, secs, mins, finished
+.exportzp prgBank, bankVal
 
 .segment "OAM"
 oam:        .res 256
@@ -94,6 +100,90 @@ rivalYHi:   .res 4
 rivalSLo:   .res 4
 rivalSHi:   .res 4
 rivalPal:   .res 4
+
+;=============================================================================
+; MMC1
+;
+; Los registros del mapper son SERIALES: cada uno se carga con cinco
+; escrituras seguidas, y de cada escritura solo entra el bit 0. Un 'sta'
+; suelto no configura nada.
+;
+; Y OJO: nunca INC/DEC ni ningun read-modify-write sobre $8000-$FFFF. Esas
+; instrucciones escriben dos veces y la segunda le mete basura al mapper.
+; Por eso aca se desplaza con 'lsr a', que toca el acumulador y no memoria.
+;
+; Todo esto vive en CORE, que el linker pone en el banco fijo: la rutina que
+; cambia de banco no puede desaparecer justo cuando se la llama.
+;=============================================================================
+.segment "CORE"
+
+MMC1_CTRL = $8000       ; mirroring + modo de PRG y CHR
+MMC1_CHR0 = $A000
+MMC1_CHR1 = $C000
+MMC1_PRG  = $E000
+
+; mirroring horizontal (nametables apiladas en vertical, que es lo que pide
+; el scroll), PRG modo 3 ($C000 fijo) y CHR en un solo banco de 8KB
+MMC1_CTRL_VAL = %01111
+
+Mmc1Init:
+    ; el bit 7 en cualquier registro resetea el shift register y fuerza modo 3
+    lda #$80
+    sta MMC1_CTRL
+
+    lda #MMC1_CTRL_VAL      ; control: cinco bits, de a uno
+    sta MMC1_CTRL
+    lsr a
+    sta MMC1_CTRL
+    lsr a
+    sta MMC1_CTRL
+    lsr a
+    sta MMC1_CTRL
+    lsr a
+    sta MMC1_CTRL
+
+    lda #0                  ; CHR banco 0: los tiles del juego viven ahi
+    sta MMC1_CHR0
+    sta MMC1_CHR0
+    sta MMC1_CHR0
+    sta MMC1_CHR0
+    sta MMC1_CHR0
+
+    lda #0                  ; arrancar con BANK0 mapeado en $8000
+    jsr SwitchBank
+    rts
+
+; A = numero de banco (0..6) -> queda mapeado en $8000-$BFFF
+SwitchBank:
+    sta prgBank
+    sta MMC1_PRG
+    lsr a
+    sta MMC1_PRG
+    lsr a
+    sta MMC1_PRG
+    lsr a
+    sta MMC1_PRG
+    lsr a
+    sta MMC1_PRG
+    rts
+
+; Prueba de que el banking funciona de verdad: mapea BANK0 y lee un byte de
+; una tabla que solo existe ahi. A = indice, devuelve el byte en A.
+ReadBank0:
+    tay
+    lda #0
+    jsr SwitchBank
+    lda bank0Tab,y
+    rts
+
+;=============================================================================
+; Tabla de prueba, en el banco conmutable. Desde $C000 este dato no se ve si
+; BANK0 no esta mapeado: es justamente lo que verifica el test.
+;=============================================================================
+.segment "BANK0"
+
+bank0Tab:
+    .byte "COL", 43         ; codigo del piloto y su numero
 
 ;=============================================================================
 .segment "CODE"
@@ -109,6 +199,8 @@ reset:
     stx PPUCTRL
     stx PPUMASK
     stx $4010
+
+    jsr Mmc1Init            ; dejar el mapper en un estado conocido antes de nada
 
 :   bit PPUSTATUS
     bpl :-
@@ -140,6 +232,11 @@ reset:
 
     lda #$77
     sta seed
+
+    ; el numero de Colapinto sale de una tabla que vive en el banco conmutable
+    lda #3
+    jsr ReadBank0
+    sta bankVal
 
     jsr GoTitle
 

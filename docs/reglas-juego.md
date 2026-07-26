@@ -256,13 +256,17 @@ Ojo con el presupuesto: máximo ocho sprites por línea de barrido.
 El orden importa: hay dos cambios de infraestructura que tienen que ir primero
 porque todo lo demás depende de ellos.
 
-**Fase 0 — Cambio de mapper (bloqueante).** Nada de esto entra en NROM. Hoy son
-16 KB de PRG y ya hay un juego adentro; qualy, boxes, menús, tablas de texto,
-22 pilotos y su IA no entran ni cerca. Hay que pasar a **MMC3 (mapper 4)**, que
-da bancos de PRG conmutables, banking de CHR y, sobre todo, **IRQ por línea de
-barrido**, que va a hacer falta para el HUD. Es un cambio de `nes.cfg`, del
-header y de la organización del código en bancos. Hacerlo antes de escribir una
-línea de lo demás.
+**Fase 0 — Cambio de mapper (bloqueante). HECHA.** Nada de esto entraba en
+NROM: 16 KB de PRG ya tenían un juego adentro. El cartucho pasó a **MMC1
+(mapper 1)**: 128 KB de PRG en 8 bancos de 16 KB, 32 KB de CHR y 8 KB de
+PRG-RAM para el guardado del campeonato.
+
+Se eligió MMC1 y no MMC3 como decía el plan original porque el emulador de los
+tests (nes-py) solo soporta los mappers 0, 1, 2 y 3. Con MMC3 la ROM no abre y
+se pierden `make test` y `make shots`, que son toda la forma de verificar que
+el juego anda. Lo único que se resigna es la **IRQ por línea de barrido**: el
+HUD fijo se va a tener que hacer con **sprite 0 hit**, que es lo mismo que usa
+el Super Mario Bros para su barra de arriba.
 
 **Fase 1 — Curvas.** Rompe el truco actual del scroll (ver `CLAUDE.md`) y
 obliga a escribir filas de tiles en el NMI. Es el cambio más grande del motor y

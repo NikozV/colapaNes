@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Genera el CHR (8KB) para el juego de F1 de NES."""
+"""Genera el CHR (32KB) para el juego de F1 de NES.
+
+MMC1 mapea el CHR en bancos de 8KB. El banco 0 lleva los tiles que usa el
+juego hoy; los otros tres van en cero hasta que haya algo que poner.
+"""
 
 TILES_BG = {}
 TILES_SPR = {}
@@ -184,10 +188,15 @@ def build(d):
         out[idx * 16:idx * 16 + 16] = data
     return out
 
+BANK_SIZE = 0x2000      # un banco de CHR del MMC1
+CHR_BANKS = 4           # 4 * 8KB = 32KB, lo que declara la cabecera iNES
+
 import sys, os
 out = sys.argv[1] if len(sys.argv) > 1 else 'build/game.chr'
-chr_data = build(TILES_BG) + build(TILES_SPR)
-assert len(chr_data) == 0x2000, len(chr_data)
+bank0 = build(TILES_BG) + build(TILES_SPR)
+assert len(bank0) == BANK_SIZE, len(bank0)
+chr_data = bank0 + bytes(BANK_SIZE * (CHR_BANKS - 1))
+assert len(chr_data) == BANK_SIZE * CHR_BANKS, len(chr_data)
 os.makedirs(os.path.dirname(out) or '.', exist_ok=True)
 open(out, 'wb').write(chr_data)
 print(f"{out} OK ({len(chr_data)} bytes)")

@@ -29,6 +29,13 @@ g.run(30)
 check(g.state == ST_TITLE, 'arranca en la pantalla de titulo')
 check(g.screen_stats()['negro'] > 0.9, 'el titulo es texto sobre fondo negro')
 
+print('\n== Banking (MMC1) ==')
+# bank0Tab vive en BANK0, un banco conmutable en $8000. El reset lo mapea y
+# copia el byte 3 a bankVal. Si el banking no anda, aca llega basura.
+check(g.peek('bankVal') == 43,
+      f"el dato de BANK0 llega al banco fijo (bankVal={g.peek('bankVal')})")
+check(g.peek('prgBank') == 0, 'queda BANK0 mapeado en $8000')
+
 print('\n== Entrar a la carrera ==')
 g.press(START)
 g.run(10)

@@ -7,7 +7,7 @@ Franco Colapinto / Alpine #43. Escrito en ensamblador 6502 puro, sin librerías,
 sin cc65 C runtime. La ROM que sale de acá corre en Mesen, FCEUX y en hardware
 original vía flashcart.
 
-No es una simulación ni un "juego estilo NES": es un cartucho NROM válido, con
+No es una simulación ni un "juego estilo NES": es un cartucho MMC1 válido, con
 todas las restricciones que eso implica. Cuando algo no se puede hacer, no se
 puede hacer de verdad.
 
@@ -40,10 +40,13 @@ No hay todavía: qualy, boxes, gomas, ERS, pilotos reales ni clasificación.
 Están explicados en detalle en `docs/reglas-juego.md`, sección de fases. El
 resumen para no arrancar por el lado equivocado:
 
-1. **NROM no da más.** 16 KB de PRG ya tienen un juego adentro. Qualy, boxes,
-   menús, 22 pilotos y sus tablas no entran. Hay que migrar a **MMC3 (mapper
-   4)** antes de escribir contenido nuevo: bancos de PRG, banking de CHR e IRQ
-   por línea de barrido para el HUD. Migrar después significa reescribir.
+1. ~~**NROM no da más.**~~ **Resuelto (fase 0).** El cartucho es MMC1 (mapper
+   1): 128 KB de PRG y 32 KB de CHR, con `SwitchBank` para el banco de
+   `$8000`. Se eligió MMC1 y no MMC3 porque el emulador de los tests (nes-py)
+   solo soporta los mappers 0, 1, 2 y 3: con MMC3 se pierden `make test` y
+   `make shots`, que son toda la forma de verificar. El precio es que no hay
+   IRQ por línea de barrido, así que el HUD fijo va a tener que salir por
+   sprite 0 hit. El detalle está en `src/nes-mmc1.cfg`.
 
 2. **El panel lateral fijo de 22 pilotos no se puede hacer así.** El fondo es
    una sola capa y hace scroll vertical: cualquier cosa dibujada ahí se mueve
@@ -90,8 +93,16 @@ normal. Las variables visibles son las que están en el bloque `.exportzp` de
 
 Estas son las que más se olvidan y las que más bugs generan:
 
-- **NROM mapper 0**: 16 KB de PRG y 8 KB de CHR, fijos. No hay bank switching.
-  Si el código no entra, hay que reescribirlo más chico, no agrandar la ROM.
+- **MMC1 mapper 1**: 128 KB de PRG en 8 bancos de 16 KB y 32 KB de CHR en 4
+  bancos de 8 KB. `$8000`–`$BFFF` es conmutable, `$C000`–`$FFFF` es el banco
+  fijo. Todo lo que no puede desaparecer nunca —reset, NMI, `SwitchBank`,
+  vectores— va en el banco fijo, en el segmento `CORE`.
+- **Los registros del MMC1 son seriales**: cinco escrituras seguidas, y de cada
+  una entra solo el bit 0. Un `sta` suelto no configura nada.
+- **Nunca INC/DEC ni ningún read-modify-write sobre `$8000`–`$FFFF`.** Esas
+  instrucciones escriben dos veces y la segunda le manda basura al mapper. Es
+  el bug clásico de MMC1 y no se ve leyendo el código. Para desplazar, `lsr a`,
+  que toca el acumulador y no memoria.
 - **VRAM solo con el rendering apagado, o dentro del NMI.** En el NMI entran
   unos 2270 ciclos y ya se van varios en el DMA de sprites. Escribir a `$2007`
   en medio del frame con el rendering prendido corrompe la pantalla.
@@ -116,7 +127,9 @@ Estas son las que más se olvidan y las que más bugs generan:
 | `$00`–`$26` | Variables del juego (zeropage, ver `.segment "ZEROPAGE"`) |
 | `$0200`–`$02FF` | Buffer de OAM, se manda por DMA en cada NMI |
 | `$0300`–`$0317` | Arrays de los 4 rivales (x, y 8.8, velocidad, paleta) |
-| `$C000`–`$FFFF` | PRG ROM |
+| `$6000`–`$7FFF` | PRG-RAM del cartucho (segmento `XRAM`, todavía sin usar) |
+| `$8000`–`$BFFF` | Banco conmutable (`BANK0`..`BANK6`), se elige con `SwitchBank` |
+| `$C000`–`$FFFF` | Banco fijo: `CORE`, `CODE`, `RODATA`, `VECTORS` |
 
 ### Flujo
 
