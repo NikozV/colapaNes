@@ -435,7 +435,7 @@ ROAD_L, ROAD_R = 48, 128   # ver ROAD_L/ROAD_R en src/main.s (pista angosta)
 # lado, eso si es offRoad de verdad.
 LAP_LEN = 3000
 PIT_ENTRY_LEN, PIT_EXIT_LEN = 300, 150
-PIT_LANE_L, PIT_LANE_R = 144, 160   # ver PIT_LANE_L/R en src/main.s
+PIT_LANE_L, PIT_LANE_R = 144, 176   # ver PIT_LANE_L/R en src/main.s
 
 mal, vistos = 0, set()
 dist_antes = g.peek('distHi') * 256 + g.peek('distLo')
@@ -569,7 +569,7 @@ g.start_race()
 # (dist < PIT_EXIT_LEN) ya esta activa desde el primer cuadro, asi que
 # alcanza con dirigirse a la franja (columnas de piano derecho) mientras el
 # circuito todavia va derecho.
-PIT_LANE_L, PIT_LANE_R = 144, 160   # ver PIT_LANE_L/R en src/main.s
+PIT_LANE_L, PIT_LANE_R = 144, 176   # ver PIT_LANE_L/R en src/main.s
 PIT_CAP = 4 * 256 * 60 // 100       # MAXSPD_HI*256*PIT_LIMIT_PCT/100
 PIT_PENALTY_SECS = 5
 centro_boxes = (PIT_LANE_L + PIT_LANE_R) // 2
@@ -584,25 +584,29 @@ check(entro, 'el auto entra a boxes al meterse en la franja durante la ventana')
 check(g.peek('pitCommitted') == 1, 'queda comprometido apenas toca la franja')
 check(g.peek('offRoad') == 0, 'estar en boxes no cuenta como salida de pista')
 
+# El menu se abre AUTOMATICO al cuadro siguiente de comprometerse (ver
+# RaceLogic): no hay margen para manejar a fondo por el carril antes de
+# eso, asi que el limite de velocidad + penalidad de boxes se prueban
+# DESPUES de la parada, cuando el control vuelve (el auto no avanzo nada
+# mientras estuvo parado, asi que sigue physicamente sobre el carril).
+g.run(5, 0)             # soltar todo, que PitMenuLogic lea flancos limpios
+g.press(START)          # confirmar con lo que ya estaba elegido
+g.run(5)
+assert g.state == ST_RACE, f"no salio del menu (state={g.state})"
+while g.peek('pitTimerHi') or g.peek('pitTimerLo'):
+    g.run(1, A)
+check(g.peek('pitCommitted') == 1,
+      'sigue comprometido al salir de la parada, dentro de la misma ventana')
+
 mal = 0
 for _ in range(60):
-    g.drive(1, target=centro_boxes)
+    g.run(1, A)
     spd = g.peek('spdHi') * 256 + g.peek('spdLo')
     if spd > PIT_CAP:
         mal += 1
-check(mal == 0, f'el limite de boxes clampea la velocidad ({mal} cuadros por encima)')
+check(mal == 0, f'el limite de boxes clampea la velocidad al salir ({mal} cuadros por encima)')
 check(g.peek('penaltySecs') >= PIT_PENALTY_SECS,
-      f"pasarse del limite en boxes suma una penalidad (penaltySecs={g.peek('penaltySecs')})")
-
-# salir de la franja hacia el asfalto SIN dejar que termine la ventana
-# (dist < PIT_EXIT_LEN todavia): pitCommitted tiene que seguir prendido --
-# comprometido es comprometido para el resto de la ventana, no solo
-# mientras se pisa la franja.
-dist_antes = g.peek('distHi') * 256 + g.peek('distLo')
-g.drive(3, target=87)   # PLAYER_X0, volver al asfalto
-dist_ahora = g.peek('distHi') * 256 + g.peek('distLo')
-assert dist_ahora < 150, f"la ventana ya termino (dist={dist_ahora}), ajustar el bloque de arriba"
-check(g.peek('pitCommitted') == 1, 'sigue comprometido al volver al asfalto dentro de la ventana')
+      f"pasarse del limite al salir de boxes suma una penalidad (penaltySecs={g.peek('penaltySecs')})")
 
 print('\n== Menu de parada ==')
 g = Game()
@@ -613,9 +617,14 @@ for _ in range(200):
     if g.state == ST_PITMENU:
         entro_menu = True
         break
-check(entro_menu, 'llegar al box (PIT_BOX_DIST) abre el menu')
+check(entro_menu, 'tocar el carril de boxes abre el menu, sin manejar mas alla')
 check(g.peek('menuCompound') == g.peek('tireCompound'),
       'el menu arranca mostrando el compuesto actual')
+
+# el drive() que llevo hasta el menu puede haber dejado RIGHT sostenido: sin
+# soltarlo primero, PitMenuLogic (que lee flancos, padNew) no ve un apriete
+# nuevo en el primer press() de aca abajo.
+g.run(5, 0)
 
 goma_antes = g.peek('menuCompound')
 g.press(RIGHT)

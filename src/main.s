@@ -135,21 +135,22 @@ WBAND_4   = PIT_LIMIT_PCT   ; 100, pinchado: mismo % que el limite de boxes
 ; dentro de una sola vuelta).
 PIT_ENTRY_LEN = 300      ; ventana de entrada: ultimas 300 unidades de la vuelta
 PIT_EXIT_LEN  = 150      ; ventana de salida: primeras 150 de la vuelta siguiente
-; Franja del pit lane: reemplaza el piano DERECHO (e=14,15 en BuildRow) --
-; nunca el izquierdo, los boxes son de un solo lado. En el marco "recto" de
-; PlayerShift (el mismo que usa ROAD_L/ROAD_R) esas dos columnas caen en
-; [144,160): mismo calculo que BuildRow, (e+TRACK_CC-TRACK_HW)*8.
+; Franja del pit lane: reemplaza el piano Y LA GRAVA del lado DERECHO
+; (e=14..17 en BuildRow, cuatro columnas) -- nunca el izquierdo, los boxes
+; son de un solo lado. Ancho a proposito: dos tiles (el piano solo) se leian
+; como el piano de siempre con otro color; cuatro se leen como un carril
+; propio, separado de la pista en vez de parte de ella. En el marco "recto"
+; de PlayerShift (el mismo que usa ROAD_L/ROAD_R) esas columnas caen en
+; [144,176): mismo calculo que BuildRow, (e+TRACK_CC-TRACK_HW)*8.
 PIT_LANE_L = (14+TRACK_CC-TRACK_HW)*8
-PIT_LANE_R = (16+TRACK_CC-TRACK_HW)*8
+PIT_LANE_R = (18+TRACK_CC-TRACK_HW)*8
 PIT_CAP = MAXSPD_HI*256*PIT_LIMIT_PCT/100   ; tope de velocidad en boxes, 8.8
 PIT_PENALTY_SECS = 5     ; por pasarse del limite estando comprometido
 
 ; --- boxes (fase 4 etapa 3): menu de parada y pitStopTimer ---
-; El box esta a PIT_BOX_DIST unidades de la LINEA (ya cruzada, en la
-; ventana de salida): comparar contra PIT_EXIT_LEN excluye la ventana de
-; entrada (distancias grandes, antes de cruzar) sin necesitar un chequeo
-; aparte.
-PIT_BOX_DIST = 50
+; El menu se abre apenas el auto se compromete (pitCommitted, ver
+; UpdatePlayer): no hay que seguir manejando hasta un punto mas -- tocar el
+; carril alcanza, como pedirian los boxes de verdad.
 WING_STEP = 51            ; ~0.2 px/cuadro en 8.8 por punto de ala (curCapHi/Lo)
 PIT_STOP_BASE = 150       ; 2.5s a 60 cuadros/seg
 PIT_STOP_SLOW_ADD = 300   ; parada lenta: 300 + azar(0..127), ~5 a 7 segundos
@@ -1908,23 +1909,13 @@ RaceLogic:
     jsr EnterClass           ; SELECT: pausa y muestra la clasificacion
     rts
 @nosel:
-    ; boxes: si estamos comprometidos, no paramos ya y llegamos a la
-    ; distancia del box (ya cruzada la linea, dist chica -- ver
-    ; PIT_BOX_DIST), el menu se abre una sola vez por parada.
-    lda pitTimerHi
-    ora pitTimerLo
-    bne @norm                ; ya estamos parados: no reabrir el menu
+    ; boxes: apenas el auto se compromete (pitCommitted, ver UpdatePlayer)
+    ; el menu se abre solo, una vez por parada -- tocar el carril alcanza,
+    ; no hace falta seguir manejando hasta un punto mas.
     lda pitCommitted
     beq @norm
     lda pitMenuShown
     bne @norm
-    lda distHi
-    bne @norm
-    lda distLo
-    cmp #PIT_BOX_DIST
-    bcc @norm
-    cmp #PIT_EXIT_LEN
-    bcs @norm
     lda #1
     sta pitMenuShown
     jsr EnterPitMenu
@@ -2384,8 +2375,9 @@ BuildRow:
     lda #T_ROAD
     bne @put
 ; piano DERECHO (e=14,15): durante la ventana de boxes es la franja de pit
-; lane en vez de piano normal. El izquierdo (e=0,1) nunca lo es: los boxes
-; son de un solo lado.
+; lane en vez de piano normal (sigue en @gravelR mas abajo, e=16,17: las
+; cuatro columnas juntas). El izquierdo (e=0,1) nunca lo es: los boxes son
+; de un solo lado.
 @curbR:
     lda tmp1
     beq @curb
@@ -2412,10 +2404,25 @@ BuildRow:
 ; siguen siendo los mismos que sin grava.
 @outside:
     cmp #2*TRACK_HW+2
-    bcc @gravel             ; e = 16,17 -> grava del lado derecho
+    bcc @gravelR            ; e = 16,17 -> grava del lado derecho (o boxes)
     cmp #254
-    bcs @gravel             ; e = 254,255 (o sea -2,-1) -> grava del izquierdo
-    jmp @grass
+    bcs @gravel             ; e = 254,255 (o sea -2,-1) -> grava del izquierdo,
+    jmp @grass               ; esa nunca es pit lane: los boxes son de un lado
+; grava derecha (e=16,17): durante la ventana de boxes tambien es pit lane,
+; junto con el piano derecho (@curbR). Las cuatro columnas juntas (14-17) se
+; leen como un carril propio y ancho, no como el piano de siempre con otro
+; color -- separado de la pista, no parte de ella.
+@gravelR:
+    lda tmp1
+    beq @gravel
+    lda genRow
+    and #1
+    beq @pitgA
+    lda #T_PIT_B
+    bne @put
+@pitgA:
+    lda #T_PIT_A
+    bne @put
 @gravel:
     lda #T_GRAVEL
     bne @put
