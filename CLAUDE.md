@@ -11,15 +11,51 @@ No es una simulación ni un "juego estilo NES": es un cartucho NROM válido, con
 todas las restricciones que eso implica. Cuando algo no se puede hacer, no se
 puede hacer de verdad.
 
+## Adónde va
+
+El objetivo final es un **fin de semana de F1 completo**: qualy con vuelta
+lanzada saliendo de boxes, parrilla de 22 pilotos reales de la temporada 2026
+con sus equipos, carrera largando desde el puesto que sacaste, desgaste de
+gomas con tres compuestos, paradas en boxes con menú, y energía tipo ERS que se
+carga en las curvas y se descarga con un botón.
+
+**Las reglas completas están en [`docs/reglas-juego.md`](docs/reglas-juego.md).**
+Ese documento manda: si algo del juego contradice esas reglas, el bug está en
+el código. Antes de tocar cualquier cosa de la simulación, leelo.
+
 ## Estado actual
 
-Jugable y completo de punta a punta:
+Lo que hay hoy en la ROM es la **base del motor**, no el juego final:
 
 - Pantalla de título → carrera de 3 vueltas → pantalla de meta con el tiempo
 - Acelerador, freno, dirección, penalización por irse al pasto
-- 4 rivales con carril y velocidad aleatorios, colisiones con rebote
+- 4 rivales genéricos con carril y velocidad aleatorios, colisiones con rebote
 - Scroll vertical infinito, HUD con vuelta actual y velocidad en km/h
 - Motor por canal de ruido atado a la velocidad, blips de vuelta y choque
+
+No hay todavía: qualy, boxes, gomas, ERS, pilotos reales ni clasificación.
+
+## Dos bloqueantes antes de agregar contenido
+
+Están explicados en detalle en `docs/reglas-juego.md`, sección de fases. El
+resumen para no arrancar por el lado equivocado:
+
+1. **NROM no da más.** 16 KB de PRG ya tienen un juego adentro. Qualy, boxes,
+   menús, 22 pilotos y sus tablas no entran. Hay que migrar a **MMC3 (mapper
+   4)** antes de escribir contenido nuevo: bancos de PRG, banking de CHR e IRQ
+   por línea de barrido para el HUD. Migrar después significa reescribir.
+
+2. **El panel lateral fijo de 22 pilotos no se puede hacer así.** El fondo es
+   una sola capa y hace scroll vertical: cualquier cosa dibujada ahí se mueve
+   con la pista. La solución acordada es una ventana móvil de sprites con los
+   cinco puestos alrededor del tuyo durante la carrera, más la tabla completa de
+   22 en una pantalla aparte con SELECT. Está detallado en las reglas, sección
+   8. No intentar el panel lateral fijo: se necesitarían escrituras a la PPU en
+   el medio de cada línea de barrido.
+
+Además, **el ERS depende de que existan curvas**, porque la energía se carga
+girando. Las curvas rompen el truco actual del scroll (ver más abajo), así que
+van temprano en el orden de trabajo.
 
 ## Comandos
 
@@ -150,8 +186,14 @@ PLAYER_Y   = 168    ; altura fija del auto en pantalla
 Ninguno de los dos se ve leyendo el código. Los dos aparecieron al mirar que la
 pantalla no cambiaba entre cuadros. De ahí la regla de oro.
 
-## Ideas pendientes
+## Documentos del proyecto
 
-Ver `docs/roadmap.md`. En orden de dificultad: música en los canales de pulso,
-IA de un rival que pelee la punta, largada con semáforo, curvas con scroll
-horizontal.
+| Archivo | Qué tiene |
+|---|---|
+| `docs/reglas-juego.md` | **Las reglas del juego.** Qualy, gomas, boxes, ERS, penalizaciones, los 22 pilotos, y las fases de implementación en orden |
+| `docs/nes-cheatsheet.md` | Registros de PPU, OAM, atributos, paletas, timing NTSC |
+| `docs/roadmap.md` | Mejoras sueltas del motor, ordenadas por cuánto lo rompen |
+
+Cuando cambien las reglas del juego, se actualiza `docs/reglas-juego.md`, no
+este archivo. Acá va solo lo que no cambia: cómo está construido, qué no
+permite el hardware y cómo se verifica.

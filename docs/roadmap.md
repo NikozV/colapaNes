@@ -1,4 +1,8 @@
-# Ideas pendientes
+# Mejoras del motor
+
+> Las funcionalidades del juego (qualy, gomas, boxes, ERS, los 22 pilotos)
+> **no van aca**: estan en `reglas-juego.md`, con su propio orden de fases.
+> Este archivo es para mejoras del motor que no cambian las reglas.
 
 Ordenadas de menos a mas invasivas. Las primeras no tocan el motor; las
 ultimas lo reescriben.
@@ -16,21 +20,7 @@ triangulo esta sin tocar. Alcanza con un reproductor chico dirigido por tablas:
 una lista de (nota, duracion) por canal y un puntero que avanza en cada cuadro.
 Ojo con los ciclos: la rutina corre en el bucle principal, no en el NMI.
 
-## 3. Rival que pelee la punta
-
-Hoy los rivales van derecho en su carril. Un rival "jefe" que se mantenga cerca
-de tu posicion, cambie de carril para bloquearte y acelere si lo pasas cambia
-por completo la sensacion del juego. Es maquina de estados pura, sin costo de
-PPU.
-
-## 4. Posicion en carrera
-
-Hace falta llevar la distancia recorrida de cada rival (16 bits cada uno) y
-ordenarlos contra la tuya. Con eso el HUD muestra "P3/5" y la pantalla de meta
-tiene podio. Cuidado con el presupuesto de sprites del HUD: ya hay 7 en esa
-linea.
-
-## 5. Curvas
+## 3. Curvas
 
 El cambio grande. Rompe el truco actual del scroll (ver CLAUDE.md), porque el
 circuito deja de ser vertical y uniforme. Dos caminos:
@@ -45,7 +35,7 @@ circuito deja de ser vertical y uniforme. Dos caminos:
 Si se va por el segundo camino, conviene hacerlo antes que cualquier otra cosa
 de esta lista: cambia como se dibuja todo.
 
-## 6. Circuitos y clima
+## 4. Circuitos y clima
 
 Con las filas dinamicas ya hechas, cambiar la paleta y los tiles por circuito
 sale casi gratis: nocturno, mojado con las lineas mas apagadas, etc.
