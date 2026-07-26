@@ -205,20 +205,19 @@ horizontal, no vertical.
 **Solución en dos partes**:
 
 1. **Durante la carrera: ventana móvil de sprites** (`BuildRankWindow`). Sobre
-   el margen izquierdo, los puestos cercanos al tuyo: dos arriba, el tuyo, dos
-   abajo. Cinco líneas de `P08COL`, **6 sprites por línea** (sin espacio
-   separador, para ahorrar uno; el espaciado sale de la posición X) — la línea
-   del jugador lleva un `!` adelante en vez de un color distinto (las 4
-   paletas de sprite ya están asignadas: jugador, rival rojo, rival plateado,
-   texto), así que son 7 en esa. Cerca de los extremos (líder, último) la
-   ventana se desliza en vez de mostrar puestos inválidos.
+   el margen izquierdo, **tres líneas**: el que tenés adelante, vos, y el que
+   tenés atrás. Es la información que de verdad sirve manejando — contra quién
+   estás peleando — y con tres líneas separadas 16 px se lee mucho mejor que
+   con cinco apretadas de a 8 px, que fue el primer intento y resultó ilegible
+   al jugarlo. La línea del jugador lleva un `!` adelante en vez de un color
+   distinto (las 4 paletas de sprite ya están asignadas: jugador, rival rojo,
+   rival plateado, texto). En los extremos la ventana se desliza: de puntero
+   muestra P1-P2-P3, de último los dos de adelante y vos.
 
    ```
-   P06SAI
-   P07GAS
-   !P08COL   <- vos, resaltado
-   P09OCO
-   P10HUL
+   P07 GAS
+   !P08 COL   <- vos, resaltado
+   P09 OCO
    ```
 
    El presupuesto de sprites por línea de barrido sigue siendo real: un auto
@@ -303,13 +302,26 @@ mediana, como pide la regla de diseño. La posición se recalcula todos los
 cuadros comparando la distancia total de los 22 (el jugador incluido);
 sección 8 tiene el detalle de la ventana móvil y la clasificación completa.
 
-Sin qualy todavía (fase 3), los 22 arrancan en distancia 0 (largada en
-punta): el orden real sale de que los pilotos con mejor ritmo se despegan
-durante la carrera, no de un grid. Los 4 autos de tráfico que se ven en
-pantalla siguen siendo decorativos (sistema de la fase 1, sin cambios): la
-simulación de posiciones es independiente de qué autos se dibujan en cada
-momento — el jugador gana o pierde puestos por su distancia real, no por
-esquivar tráfico.
+Sin qualy todavía (fase 3) no hay parrilla real, pero tampoco pueden arrancar
+todos en la misma distancia (quedarían encimados): se escalonan `GRID_STEP`
+unidades en el orden de la tabla, con el jugador largando desde el medio del
+pelotón.
+
+**Los autos que se ven en pantalla son los rivales reales de la
+clasificación**, no tráfico decorativo. Cada cuadro se toman los puestos
+vecinos al del jugador y se los ubica en pantalla según la diferencia de
+distancia total: adelantar un auto en pantalla es adelantarlo de verdad en la
+tabla. (El primer intento de esta fase los mantuvo como sistemas separados, y
+jugándolo se notaba enseguida: pasabas autos que no estaban en la carrera.)
+
+**Calibración del ritmo, medida y no supuesta.** Corriendo la ROM en el
+emulador, el jugador rinde ~3.49 unidades/cuadro manejando bien, ~3.19 solo
+apretando acelerador, y 4.0 en el caso perfecto. El rango de la IA quedó
+montado justo encima de esos números (3.148 a 3.555) en vez de por debajo:
+manejando bien terminás alrededor de P5, solo apretando A terminás último, y
+para ganar hay que manejar casi perfecto. La primera versión tenía la IA
+entera por debajo del jugador y se ganaba siempre sin importar cómo
+manejaras.
 
 **Fase 3 — Qualy y parrilla.** Estado nuevo, salida de boxes, cronómetro,
 generación de tiempos de la IA, pantalla de parrilla, y la carrera largando

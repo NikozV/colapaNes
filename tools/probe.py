@@ -110,7 +110,9 @@ for _ in range(400):
     pos_streak = 0 if pos_ok else pos_streak + 1
     pos_bad_max_streak = max(pos_bad_max_streak, pos_streak)
 
-    ply_esperado = (g.peek('lapNum') - 1) * 3000 + g.dist
+    # PLAYER_START: sin qualy todavia, los 22 se escalonan en la largada y el
+    # jugador arranca con esa distancia, no en 0 (ver StartRace)
+    ply_esperado = 256 + (g.peek('lapNum') - 1) * 3000 + g.dist
     ply_ok = (g.peek('plyTotalHi') * 256 + g.peek('plyTotalLo')) == ply_esperado
     ply_streak = 0 if ply_ok else ply_streak + 1
     ply_bad_max_streak = max(ply_bad_max_streak, ply_streak)
@@ -137,6 +139,34 @@ check(gas_pace < mediana,
 # visible obvio. Con jugador+HUD+ventana+4 rivales el presupuesto es
 # ~61 sprites (244 bytes) de los 64 (256 bytes) disponibles: poco margen.
 check(oamidx_max <= 252, f'oamIdx no se acerca al desborde (maximo visto: {oamidx_max}/256)')
+
+# Los autos que se ven SON los rivales de la clasificacion, no trafico
+# decorativo: cada uno tiene que ser un piloto real, distinto del jugador,
+# distinto entre si, y estar en pantalla. Si alguna de esas se rompe,
+# estariamos dibujando autos que no corren la carrera.
+CARDRV = g.labels['carDrv']
+CARY = g.labels['carY']
+autos_mal = 0
+autos_max = 0
+for _ in range(400):
+    g.run(1, A)
+    n = g.peek('carCount')
+    autos_max = max(autos_max, n)
+    if n > 6:
+        autos_mal += 1
+        continue
+    drvs = [g.peek(CARDRV + i) for i in range(n)]
+    ys = [g.peek(CARY + i) for i in range(n)]
+    if len(set(drvs)) != len(drvs):          # dos veces el mismo piloto
+        autos_mal += 1
+    if any(d >= NUM_DRIVERS for d in drvs):  # piloto inexistente
+        autos_mal += 1
+    if PLAYER_SLOT in drvs:                  # el jugador dibujado como rival
+        autos_mal += 1
+    if any(y >= 240 for y in ys):            # fuera de pantalla
+        autos_mal += 1
+check(autos_mal == 0, f'los autos en pantalla son rivales reales de la carrera ({autos_mal} cuadros mal)')
+check(autos_max >= 2, f'se ven varios rivales a la vez (maximo simultaneo: {autos_max})')
 
 print('\n== El scroll se mueve ==')
 s0 = g.peek('scrollLo')
@@ -202,8 +232,19 @@ for _ in range(8):
     if g.state == ST_RACE:
         break
 check(g.state == ST_RACE, 'SELECT de nuevo vuelve a la carrera')
-check(g.peek('distLo') == dist_ref, 'la distancia retoma exacto donde estaba')
-check(g.peek('scrollLo') == scroll_antes, 'el scroll retoma exacto donde estaba')
+
+# No se puede exigir igualdad EXACTA: el cambio de estado cae en algun punto
+# adentro de un step de nes-py, asi que para cuando Python lee la RAM la
+# carrera ya avanzo un cuadro o dos (mismo desfasaje step/frame documentado
+# arriba). Lo que si tiene que valer es que retome DE DONDE ESTABA y no de
+# cero: durante la clasificacion el scroll se fuerza a 0, asi que si el
+# restore fallara se quedaria pegado ahi.
+dist_post = g.peek('distLo')
+scroll_post = g.peek('scrollLo')
+check(0 <= (dist_post - dist_ref) % 256 <= 12,
+      f'la distancia retoma donde estaba (era {dist_ref}, quedo {dist_post})')
+check(scroll_post != 0 and abs(scroll_post - scroll_antes) <= 12,
+      f'el scroll retoma donde estaba, no en 0 (era {scroll_antes}, quedo {scroll_post})')
 check(perfil(g) == perfil_antes, 'el circuito no se rompe al ir y volver de la clasificacion')
 g.run(8, 0)
 
@@ -236,8 +277,26 @@ for _ in range(600):                    # llegar al pasto, este donde este
     if g.peek('offRoad') == 1:
         break
 check(g.peek('offRoad') == 1, 'se puede llegar al pasto')
-g.run(120, A | LEFT)
-check(g.peek('spdHi') <= 2, 'fuera de pista la velocidad queda limitada')
+
+# El limite de velocidad fuera de pista se verifica EN los cuadros en que
+# realmente esta afuera, no despues de N cuadros fijos: el circuito curva, y
+# quedarse apretando izquierda no garantiza seguir en el pasto (la pista se
+# puede correr hasta meterte de nuevo en el asfalto sola). Se saltea el
+# primer cuadro de cada salida porque UpdatePlayer aplica el limite con el
+# offRoad del cuadro anterior.
+rapido_afuera, cuadros_afuera, antes_afuera = 0, 0, False
+for _ in range(400):
+    g.run(1, A | LEFT)
+    afuera = g.peek('offRoad') == 1
+    if afuera and antes_afuera:
+        cuadros_afuera += 1
+        if g.peek('spdHi') > 2:
+            rapido_afuera += 1
+    antes_afuera = afuera
+check(cuadros_afuera > 20, f'el barrido paso suficiente tiempo en el pasto ({cuadros_afuera} cuadros)')
+check(rapido_afuera == 0,
+      f'fuera de pista la velocidad queda limitada ({rapido_afuera} cuadros por encima del tope)')
+
 for _ in range(600):
     g.run(1, A | RIGHT)
     if g.peek('offRoad') == 0:
