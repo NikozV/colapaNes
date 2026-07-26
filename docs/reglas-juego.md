@@ -268,10 +268,15 @@ el juego anda. Lo único que se resigna es la **IRQ por línea de barrido**: el
 HUD fijo se va a tener que hacer con **sprite 0 hit**, que es lo mismo que usa
 el Super Mario Bros para su barra de arriba.
 
-**Fase 1 — Curvas.** Rompe el truco actual del scroll (ver `CLAUDE.md`) y
-obliga a escribir filas de tiles en el NMI. Es el cambio más grande del motor y
-**el ERS depende de él**: sin curvas no hay dónde cargar energía. Va segundo
-porque todo lo que se construya antes hay que retocarlo después.
+**Fase 1 — Curvas. HECHA.** Rompió el truco del scroll: las dos nametables son
+ahora un buffer circular de 60 filas, y cada 8 px de avance entra una fila
+nueva escrita en el NMI. El asfalto se corre moviendo la columna del centro, de
+a 2 columnas y solo en los bordes de bloque de atributos, que es lo que exige
+que las paletas de fondo sean por bloques de 16 × 16 px. El detalle está en
+`CLAUDE.md`.
+
+Los rivales pasaron a vivir en coordenadas de pista, así que siguen la curva
+solos. **El ERS ya tiene dónde cargarse.**
 
 **Fase 2 — Los 22 pilotos.** Tablas de datos, simulación de los que no están en
 pantalla, cálculo de posiciones, ventana móvil de sprites y pantalla de

@@ -20,20 +20,25 @@ triangulo esta sin tocar. Alcanza con un reproductor chico dirigido por tablas:
 una lista de (nota, duracion) por canal y un puntero que avanza en cada cuadro.
 Ojo con los ciclos: la rutina corre en el bucle principal, no en el NMI.
 
-## 3. Curvas
+## 3. Curvas — HECHA
 
-El cambio grande. Rompe el truco actual del scroll (ver CLAUDE.md), porque el
-circuito deja de ser vertical y uniforme. Dos caminos:
+Se fue por el camino de las **filas nuevas escritas en el NMI**, no por el
+scroll horizontal del fondo entero. Cada 8 px de avance entra una fila de 32
+tiles armada en el bucle principal, y con eso el circuito puede tener cualquier
+forma. Cuesta unos 480 ciclos de los 1727 que quedan libres en el vblank
+despues del DMA de sprites, mas 120 cuando ademas toca reescribir atributos.
 
-- **Scroll horizontal del fondo entero**: el circuito se desplaza en X segun la
-  curva y el auto pelea contra la fuerza lateral. Barato pero se ve plano.
-- **Filas nuevas escritas en el NMI**: el clasico. Cada vez que el scroll
-  avanza 8 px hay que escribir una fila de 32 tiles arriba o abajo, y con eso
-  el circuito puede tener cualquier forma. Hay que armar un buffer de fila y
-  medir bien los ciclos del NMI.
+Lo que quedo pendiente y se puede mejorar:
 
-Si se va por el segundo camino, conviene hacerlo antes que cualquier otra cosa
-de esta lista: cambia como se dibuja todo.
+- Las curvas son **escalonadas de a 16 px**, porque los atributos mandan (ver
+  CLAUDE.md). Si alguna vez se quiere una curva mas suave, habria que angostar
+  el asfalto o resignar el piano de dos colores.
+- Los autos son sprites rigidos de 16x16 sobre una pista que dobla, asi que en
+  las curvas mas cerradas pueden pisar el piano unos pixeles. Se puede achicar
+  calculando el desplazamiento a la altura del CENTRO del auto y no de su
+  borde de arriba.
+- El trazado es una tabla de segmentos fija (`segLen` / `segDelta`) que se
+  repite. Cuando existan varios circuitos, va a querer vivir en un banco.
 
 ## 4. Circuitos y clima
 
