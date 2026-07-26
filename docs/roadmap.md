@@ -9,9 +9,15 @@ ultimas lo reescriben.
 
 ## 1. Largada con semaforo
 
-Estado nuevo entre el titulo y la carrera: tres luces rojas que se apagan, con
-blips en el canal de pulso, y recien ahi se habilita el control. Baratisimo:
-son cuatro sprites y un contador. Bonus: penalizar la largada adelantada.
+Estado nuevo entre la parrilla y la carrera: tres luces rojas que se apagan,
+con blips en el canal de pulso, y recien ahi se habilita el control.
+Baratisimo: son cuatro sprites y un contador. Bonus: penalizar la largada
+adelantada.
+
+La MECANICA de largada parada ya existe desde la fase 3 (`startRamp` /
+`launchSpd` en `UpdateAI`): el jugador arranca detenido y la IA acelera con la
+misma curva, asi que la largada es pareja. Lo que falta es solo la parte
+visual del semaforo y la penalizacion por adelantarse.
 
 ## 2. Musica
 

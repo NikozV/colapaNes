@@ -338,9 +338,34 @@ lo que hace que pasar a un piloto de jerarquía cueste y pasar a un colista
 no: el ritmo base lo pone el equipo, pelear el paso lo pone el piloto. Vale
 para los dos lados, así que si lo pasás te lo intenta devolver.
 
-**Fase 3 — Qualy y parrilla.** Estado nuevo, salida de boxes, cronómetro,
-generación de tiempos de la IA, pantalla de parrilla, y la carrera largando
-desde el puesto obtenido.
+**Fase 3 — Qualy y parrilla. HECHA.** El fin de semana ahora arranca por la
+qualy: se sale detenido, la primera vuelta no cronometra (vuelta de salida) y
+la segunda sí. El cronómetro cuenta **cuadros**, no segundos, porque las
+diferencias que deciden la parrilla son de décimas; la conversión a `SS.CC` se
+hace una sola vez al mostrar.
+
+Los 21 tiempos de la IA salen de la fórmula de la sección 3, calibrada contra
+lo medido: van de 780 a 940 cuadros, el mismo escalonamiento que sus ritmos de
+carrera, así que la parrilla es coherente con lo que después pasa en pista.
+
+Salirse con las cuatro ruedas anula la vuelta (se mira el **centro** del auto,
+no su borde, que es lo que ya marcaba `offRoad`), y sin vuelta válida se larga
+último. La carrera larga desde el puesto obtenido: es lo que le da
+consecuencia a la sesión.
+
+**Lo que quedó afuera por depender de boxes (fase 4)**: arrancar en boxes,
+salir por el pit lane y su límite de velocidad, y las gomas frías de la vuelta
+de salida. No es una simplificación por comodidad — el pit lane es geometría
+de pista que todavía no existe.
+
+**Largada parada.** La qualy destapó un problema que antes no se veía: el
+jugador arranca detenido y su distancia crece con la parte *entera* de su
+velocidad, así que en los primeros 85 cuadros acumula 127 unidades donde a
+fondo acumularía 340. La IA no tenía modelo de aceleración y salía a ritmo
+pleno desde el primer cuadro, sacándole unos 6 puestos y borrando justo lo que
+la qualy acababa de decidir. Ahora la IA acelera con la misma curva que el
+jugador (`launchSpd`, sin su fracción de ritmo): la diferencia en la largada
+quedó en un puesto.
 
 **Fase 4 — Gomas y boxes.** Desgaste, compuestos, entrada al pit lane, menú de
 parada, regla de los dos compuestos, penalizaciones.

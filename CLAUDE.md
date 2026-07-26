@@ -27,7 +27,8 @@ el código. Antes de tocar cualquier cosa de la simulación, leelo.
 
 Lo que hay hoy en la ROM es la **base del motor**, no el juego final:
 
-- Pantalla de título → carrera de 3 vueltas → pantalla de meta con el tiempo
+- **Fin de semana completo**: título → qualy (vuelta de salida + lanzada) →
+  parrilla → carrera de 3 vueltas → meta. Se larga desde el puesto que sacaste
 - Acelerador, freno, dirección, penalización por irse al pasto o a la grava
 - **Circuito con curvas**, dibujado por filas escritas en el NMI, con grava
   entre el piano y el pasto
@@ -39,9 +40,16 @@ Lo que hay hoy en la ROM es la **base del motor**, no el juego final:
   / vos / el de atrás, y clasificación completa de los 22 con SELECT
 - Motor por canal de ruido atado a la velocidad, blips de vuelta y choque
 
-No hay todavía: qualy, boxes, gomas ni ERS. Sin qualy no hay parrilla real:
-los 22 se escalonan `GRID_STEP` unidades en el orden de la tabla y el jugador
-larga desde el medio del pelotón.
+No hay todavía: boxes, gomas ni ERS. De la qualy quedó afuera lo que depende
+de boxes (arrancar en el pit lane y su límite de velocidad) y de las gomas
+(que arranquen frías en la vuelta de salida).
+
+**El cronómetro de la qualy cuenta cuadros, no segundos.** Las diferencias que
+deciden la parrilla son de décimas, y contar cuadros hace que comparar y
+ordenar tiempos sea una resta de 16 bits. La conversión a `SS.CC` se hace una
+sola vez al mostrar (`FramesToTime`) — ojo que la cuenta de centésimas
+(`cuadros * 5 / 3`) **necesita 16 bits**: en 8 se desborda con restos de 52
+cuadros para arriba, y el bug no se ve en los datos, solo mirando la pantalla.
 
 ## Dos bloqueantes antes de agregar contenido
 
