@@ -42,9 +42,15 @@ CC_MAX    = 20          ; limites sin salirse de las 32 columnas
 NUM_AI      = 21
 NUM_DRIVERS = 22
 PLAYER_SLOT = 19        ; indice 0-based de COL en la tabla de 22 pilotos
-AIPACE_HI   = 2         ; parte entera del pace de los IA (paceLo da la fraccion)
+AIPACE_HI   = 3         ; parte entera del pace de los IA (paceLo da la fraccion)
 RANK_X      = 0         ; ventana de posiciones: margen izquierdo, fuera del asfalto
-RANK_Y      = 32        ; debajo del HUD (filas 1 y 2 en Y=8/16)
+RANK_Y      = 40        ; debajo del HUD (filas 1 y 2 en Y=8/16)
+RANK_LINES  = 3         ; el de adelante, vos, el de atras
+RANK_SEP    = 16        ; separacion entre lineas (el doble de un tile: se lee mejor)
+MAX_CARS    = 6         ; tope de autos dibujados a la vez (presupuesto de OAM)
+PLAYER_START = 256      ; distancia inicial del jugador (deja lugar para que
+                        ; los de atras arranquen con distancia menor)
+GRID_STEP   = 24        ; separacion de la parrilla provisoria, en unidades
 
 T_GRASS_A = $01
 T_GRASS_B = $02
@@ -53,6 +59,7 @@ T_DASH    = $04
 T_CURB_A  = $05
 T_CURB_B  = $06
 T_EDGE    = $07
+T_GRAVEL  = $08
 
 .segment "ZEROPAGE"
 nmiFlag:    .res 1
@@ -140,12 +147,16 @@ savedScrollNT: .res 1
 oam:        .res 256
 
 .segment "BSS"
-rivalX:     .res 4
-rivalYLo:   .res 4
-rivalYHi:   .res 4
-rivalSLo:   .res 4
-rivalSHi:   .res 4
-rivalPal:   .res 4
+; Autos visibles en pantalla. NO son trafico decorativo: son los rivales
+; reales cuya distancia total esta lo bastante cerca de la del jugador como
+; para entrar en pantalla. Se rearman de cero cada cuadro (BuildCars).
+carDrv:     .res MAX_CARS   ; indice de piloto (0..21)
+carX:       .res MAX_CARS   ; X en coordenadas de pista
+carY:       .res MAX_CARS   ; Y en pantalla
+carPal:     .res MAX_CARS
+carCount:   .res 1
+
+.export carCount, carDrv, carY
 
 rowBuf:     .res 32         ; la fila que el NMI va a mandar a la PPU
 attrBuf:    .res 8          ; la fila de atributos del bloque
@@ -346,35 +357,48 @@ pilotCode2Tab: .byte "RACMRDSTBIORWNLROASLRT"
 pilotTeamTab:
     .byte 0,0,1,1,2,2,3,3,4,4,5,5,6,6,7,7,8,8,9,9,10,10
 
-; paceLo = 96 + (ritmo_equipo + habilidad - 159) * 2 -- ver el diseno en
-; docs/reglas-juego.md. Constante de ensamblado: la resuelve ca65, no el
-; 6502. Rango real con esta tabla: 96 (LIN) a 160 (VER) -> pace promedio
-; 2.375 a 2.625 unidades/cuadro (AIPACE_HI=2 mas esta fraccion), spread del
-; orden de una F1 real. GAS (Alpine) da 112, por debajo de la mediana de los
-; 21 -> "medio de parrilla", como pide la regla de diseno.
+; paceLo = 38 + (ritmo_equipo + habilidad - 159) * 13/4. Constante de
+; ensamblado: la resuelve ca65, no el 6502.
+;
+; CALIBRADO CONTRA MEDICIONES REALES, no contra una suposicion. Corriendo la
+; ROM en el emulador, el jugador rinde:
+;
+;     manejando bien (siguiendo el asfalto)   ~3.49 unidades/cuadro
+;     solo apretando A (se lleva por delante)  ~3.19
+;     perfecto (sin chocar nunca)               4.00
+;
+; Con AIPACE_HI=3 el rango de la IA queda 3.148 (LIN) a 3.555 (VER), o sea
+; montado justo encima del rendimiento del jugador en vez de por debajo:
+; manejando bien terminas ~P5, solo apretando A ~P18, y para ganar hay que
+; manejar casi perfecto. La version anterior (AIPACE_HI=2, rango 2.375-2.625)
+; quedaba entera por DEBAJO del jugador y por eso se ganaba siempre sin
+; importar como manejaras.
+;
+; GAS (Alpine) da 64, en el tercio bajo -> "medio de parrilla", como pide la
+; regla de diseno. El spread chico ademas mantiene el peloton junto.
 teamPaceLoTab:
-    .byte 96+(95+95-159)*2   ; NOR
-    .byte 96+(95+94-159)*2   ; PIA
-    .byte 96+(92+95-159)*2   ; LEC
-    .byte 96+(92+93-159)*2   ; HAM
-    .byte 96+(92+99-159)*2   ; VER
-    .byte 96+(92+85-159)*2   ; HAD
-    .byte 96+(90+93-159)*2   ; RUS
-    .byte 96+(90+87-159)*2   ; ANT
-    .byte 96+(85+88-159)*2   ; ALB
-    .byte 96+(85+90-159)*2   ; SAI
-    .byte 96+(84+92-159)*2   ; ALO
-    .byte 96+(84+78-159)*2   ; STR
-    .byte 96+(83+82-159)*2   ; LAW
-    .byte 96+(83+76-159)*2   ; LIN
-    .byte 96+(82+87-159)*2   ; HUL
-    .byte 96+(82+82-159)*2   ; BOR
-    .byte 96+(82+85-159)*2   ; OCO
-    .byte 96+(82+84-159)*2   ; BEA
-    .byte 96+(80+87-159)*2   ; GAS
-    .byte 0                  ; COL - jugador, no se usa
-    .byte 96+(76+86-159)*2   ; PER
-    .byte 96+(76+85-159)*2   ; BOT
+    .byte 38+(95+95-159)*13/4   ; NOR
+    .byte 38+(95+94-159)*13/4   ; PIA
+    .byte 38+(92+95-159)*13/4   ; LEC
+    .byte 38+(92+93-159)*13/4   ; HAM
+    .byte 38+(92+99-159)*13/4   ; VER
+    .byte 38+(92+85-159)*13/4   ; HAD
+    .byte 38+(90+93-159)*13/4   ; RUS
+    .byte 38+(90+87-159)*13/4   ; ANT
+    .byte 38+(85+88-159)*13/4   ; ALB
+    .byte 38+(85+90-159)*13/4   ; SAI
+    .byte 38+(84+92-159)*13/4   ; ALO
+    .byte 38+(84+78-159)*13/4   ; STR
+    .byte 38+(83+82-159)*13/4   ; LAW
+    .byte 38+(83+76-159)*13/4   ; LIN
+    .byte 38+(82+87-159)*13/4   ; HUL
+    .byte 38+(82+82-159)*13/4   ; BOR
+    .byte 38+(82+85-159)*13/4   ; OCO
+    .byte 38+(82+84-159)*13/4   ; BEA
+    .byte 38+(80+87-159)*13/4   ; GAS
+    .byte 0                     ; COL - jugador, no se usa
+    .byte 38+(76+86-159)*13/4   ; PER
+    .byte 38+(76+85-159)*13/4   ; BOT
 
 ; MCL FER RBR MER WIL AST RCB AUD HAA ALP CAD
 teamName0Tab: .byte "MFRMWARAHAC"
@@ -583,7 +607,7 @@ LoadPalettes:
 
 palette:
     ; fondo
-    .byte $0F,$1A,$2A,$30   ; 0 pasto
+    .byte $0F,$1A,$2A,$27   ; 0 pasto (el color 3 es la grava del costado)
     .byte $0F,$00,$10,$30   ; 1 asfalto
     .byte $0F,$16,$30,$00   ; 2 piano
     .byte $0F,$12,$30,$27   ; 3 texto azul
@@ -812,38 +836,42 @@ StartRace:
     sta scrollLo
     sta scrollNT
 
-    ; rivales
-    ldx #0
-@rv:
-    jsr SpawnRival
-    lda #200
-    sta rivalYHi,x          ; arrancan repartidos adelante
-    txa
-    asl a
-    asl a
-    asl a
-    asl a
-    asl a
-    eor #$3F
-    sta rivalYHi,x
-    inx
-    cpx #4
-    bne @rv
-
-    ; --- los 22 pilotos: todos arrancan en distancia 0 (sin qualy todavia,
-    ; el orden real sale de correr, no de un grid) ---
+    ; --- los 22 pilotos ---
+    ; Sin qualy todavia (fase 3) no hay parrilla de verdad, pero tampoco
+    ; pueden arrancar todos en la misma distancia: quedarian encimados en el
+    ; mismo punto de la pista. Se escalonan GRID_STEP unidades entre si en el
+    ; orden de la tabla, con el jugador en PLAYER_START, asi que se larga
+    ; desde el medio del peloton. El carril sale del indice de piloto
+    ; (laneX en BuildCars), asi que dos autos consecutivos no se pisan.
     lda #0
+    sta carCount
+    lda #<PLAYER_START
     sta plyTotalLo
+    lda #>PLAYER_START
     sta plyTotalHi
+
+    lda #<(PLAYER_START + PLAYER_SLOT * GRID_STEP)
+    sta tmp1
+    lda #>(PLAYER_START + PLAYER_SLOT * GRID_STEP)
+    sta tmp2
     ldx #0
 @pl:
-    lda #0
+    lda tmp1
     sta totalLo,x
+    lda tmp2
     sta totalHi,x
+    lda #0
     sta paceFrac,x
     txa
     sta orderTable,x        ; orden identidad: orderTable[i] = i
     sta rankOf,x
+    lda tmp1                ; el siguiente arranca GRID_STEP mas atras
+    sec
+    sbc #GRID_STEP
+    sta tmp1
+    lda tmp2
+    sbc #0
+    sta tmp2
     inx
     cpx #NUM_DRIVERS
     bne @pl
@@ -942,12 +970,15 @@ RaceLogic:
     jsr UpdatePlayer
     jsr UpdateScroll
     jsr UpdateTrack
-    jsr UpdateRivals
-    jsr CheckCollisions
     jsr UpdateDistance
     jsr SyncPlayerSlot
     jsr UpdateAI
     jsr UpdatePositions
+    ; BuildCars va DESPUES de UpdatePositions (necesita el orden y las
+    ; distancias de este cuadro) y ANTES de CheckCollisions y BuildOAM, que
+    ; son las dos que consumen la lista de autos en pantalla.
+    jsr BuildCars
+    jsr CheckCollisions
     jsr EngineSound
     jsr BuildOAM
     rts
@@ -1255,8 +1286,8 @@ BuildRow:
     sbc genCC
     clc
     adc #12
-    cmp #24                 ; si se paso (por arriba o por abajo) es pasto
-    bcs @grass
+    cmp #24                 ; e >= 24: se paso del circuito (o quedo negativo,
+    bcs @outside            ; que envuelve por arriba). Grava o pasto.
     cmp #2
     bcc @curb
     cmp #22
@@ -1279,6 +1310,19 @@ BuildRow:
     bne @put
 @curbA:
     lda #T_CURB_A
+    bne @put
+; Afuera del circuito. Los dos tiles pegados al piano son grava y el resto
+; pasto. La grava comparte la paleta del pasto (usa su color 3, que el pasto
+; no toca), asi que no agrega ningun limite de paleta nuevo: los atributos
+; siguen siendo los mismos que sin grava.
+@outside:
+    cmp #26
+    bcc @gravel             ; e = 24,25 -> grava del lado derecho
+    cmp #254
+    bcs @gravel             ; e = 254,255 (o sea -2,-1) -> grava del izquierdo
+    jmp @grass
+@gravel:
+    lda #T_GRAVEL
     bne @put
 @grass:
     txa
@@ -1483,92 +1527,94 @@ WriteRowNow:
     bne :-
     rts
 
-;----------------------------------------------------------------- rivales
-SpawnRival:
-    txa
-    pha
-    jsr Rand
-    pla
-    tax
-    lda seed
-    and #3
-    tay
-    lda laneX,y
-    sta rivalX,x
-    lda seed
-    and #1
-    sta rivalPal,x
-    lda seed
-    and #$60
-    clc
-    adc #$60
-    sta rivalSLo,x
-    lda seed
-    and #1
-    clc
-    adc #1
-    sta rivalSHi,x
-    lda #0
-    sta rivalYLo,x
-    rts
-
+;=============================================================================
+; LOS AUTOS EN PANTALLA
+;
+; No hay trafico decorativo: los autos que se ven SON los rivales reales de
+; la clasificacion. Cada cuadro se recorren los puestos vecinos al del
+; jugador y, para cada uno, se calcula donde cae en pantalla a partir de la
+; diferencia de distancia total contra el jugador:
+;
+;     y_pantalla = PLAYER_Y - (distancia_rival - distancia_jugador)
+;
+; Como el jugador avanza ~3.5 unidades de distancia por cuadro y el scroll
+; se mueve ~3.5 px por cuadro, una unidad de distancia es aproximadamente un
+; pixel: el que te saca 20 unidades aparece 20 px mas arriba. Los que quedan
+; fuera de [0,239] simplemente no se dibujan, que es lo que dice la regla de
+; "solo los que estan cerca tuyo se dibujan".
+;
+; Consecuencia: adelantar un auto en pantalla es adelantarlo de verdad en la
+; clasificacion. Antes eran sistemas separados y se veian autos que no eran
+; de la carrera.
+;=============================================================================
 laneX:
     .byte 56, 92, 132, 168
 
-UpdateRivals:
-    ldx #0
-@lp:
-    ; delta = velocidad jugador - velocidad rival
-    lda spdLo
-    sec
-    sbc rivalSLo,x
-    sta dLo
-    lda spdHi
-    sbc rivalSHi,x
-    sta dHi
-    bmi @neg
-
-    ; delta positivo: el rival baja hacia nosotros
-    lda rivalYLo,x
-    clc
-    adc dLo
-    sta rivalYLo,x
-    lda rivalYHi,x
-    adc dHi
-    sta rivalYHi,x
-    cmp #240
-    bcc @next
-    jsr SpawnRival          ; salio por abajo -> reaparece arriba
+BuildCars:
     lda #0
-    sta rivalYHi,x
-    jmp @next
+    sta carCount
 
-@neg:
-    ; delta negativo: el rival se aleja hacia arriba
-    lda dLo
-    eor #$FF
-    clc
-    adc #1
-    sta dLo
-    lda dHi
-    eor #$FF
-    adc #0
-    sta dHi
-    lda rivalYLo,x
+    ; arrancar unos puestos por delante del jugador y barrer hacia atras
+    lda rankOf+PLAYER_SLOT
     sec
-    sbc dLo
-    sta rivalYLo,x
-    lda rivalYHi,x
-    sbc dHi
-    sta rivalYHi,x
-    bcs @next
-    jsr SpawnRival          ; salio por arriba -> reaparece abajo
-    lda #238
-    sta rivalYHi,x
+    sbc #MAX_CARS/2+1
+    bcs :+
+    lda #0                   ; el jugador va puntero: barrer desde el primero
+:   sta tmp5                  ; tmp5 = puesto que se esta mirando
+@lp:
+    lda carCount
+    cmp #MAX_CARS
+    beq @done
+    lda tmp5
+    cmp #NUM_DRIVERS
+    bcs @done
+
+    ldy tmp5
+    lda orderTable,y
+    sta tmp6                  ; tmp6 = piloto de ese puesto
+    cmp #PLAYER_SLOT
+    beq @next                 ; al jugador lo dibuja BuildOAM aparte
+
+    ; y = PLAYER_Y - (total[rival] - total[jugador]), en 16 bits
+    ldy tmp6
+    lda totalLo,y
+    sec
+    sbc plyTotalLo
+    sta tmp1
+    lda totalHi,y
+    sbc plyTotalHi
+    sta tmp2
+
+    lda #PLAYER_Y
+    sec
+    sbc tmp1
+    sta tmp3                  ; y lo
+    lda #0
+    sbc tmp2
+    bne @next                 ; y no entra en un byte -> fuera de pantalla
+    lda tmp3
+    cmp #240
+    bcs @next                 ; abajo del borde inferior
+
+    ldx carCount
+    sta carY,x
+    lda tmp6
+    sta carDrv,x
+    and #3
+    tay
+    lda laneX,y               ; el carril sale del indice de piloto: los que
+    sta carX,x                ; corren juntos quedan en carriles distintos
+    ldy tmp6
+    lda pilotTeam,y
+    and #1
+    clc
+    adc #1                    ; paletas de sprite 1 o 2 (la 0 es del jugador)
+    sta carPal,x
+    inc carCount
 @next:
-    inx
-    cpx #4
-    bne @lp
+    inc tmp5
+    jmp @lp
+@done:
     rts
 
 ;--------------------------------------------------------------- colisiones
@@ -1584,22 +1630,24 @@ CheckCollisions:
     sec
     sbc tmp4
     sta tmp3                ; jugador en coordenadas de pista
+    lda carCount
+    beq @rts
     ldx #0
 @lp:
-    ; |playerX - rivalX| < 13 ?
+    ; |playerX - carX| < 13 ?
     lda tmp3
     sec
-    sbc rivalX,x
+    sbc carX,x
     bcs :+
     eor #$FF
     clc
     adc #1
 :   cmp #13
     bcs @next
-    ; |PLAYER_Y - rivalY| < 13 ?
+    ; |PLAYER_Y - carY| < 13 ?
     lda #PLAYER_Y
     sec
-    sbc rivalYHi,x
+    sbc carY,x
     bcs :+
     eor #$FF
     clc
@@ -1609,7 +1657,7 @@ CheckCollisions:
     jmp @crash
 @next:
     inx
-    cpx #4
+    cpx carCount
     bne @lp
 @rts:
     rts
@@ -1623,7 +1671,7 @@ CheckCollisions:
     ; Empujar al costado. De que lado quedo se decide en coordenadas de pista
     ; (tmp3), pero el empujon se aplica sobre la X de pantalla.
     lda tmp3
-    cmp rivalX,x
+    cmp carX,x
     bcs @pushR
     lda playerX
     sec
@@ -1763,12 +1811,12 @@ ApplyLapVariation:
     sbc #3                    ; -3..+4, tratado como delta con signo
     clc
     adc teamPaceLo,x
-    cmp #64
+    cmp #30                   ; clamp al rango real de la tabla (38..142)
     bcs :+
-    lda #64
-:   cmp #193
+    lda #30
+:   cmp #161
     bcc :+
-    lda #192
+    lda #160
 :   sta teamPaceLo,x
 @next:
     inx
@@ -2292,25 +2340,21 @@ BuildOAM:
     jsr BuildHudRow2
     jsr BuildRankWindow
 
-    ; --- rivales (trafico decorativo, al final: son lo primero que se
-    ; sacrifica en un overflow de scanline)
+    ; --- rivales reales (los que estan cerca tuyo en la clasificacion).
+    ; Van al final: si una linea de barrido se pasa de 8 sprites, lo primero
+    ; que se pierde es un auto y no el HUD ni la ventana de posiciones.
+    lda carCount
+    beq @carsdone
     ldx #0
 @rv:
-    lda rivalYHi,x
-    cmp #240
-    bcs @rvnext
-    cmp #8
-    bcc @rvnext
     txa
     pha
-    ; sacar todo del rival ANTES de llamar a ShiftAtY, que pisa A y X
-    lda rivalX,x
+    ; sacar todo del auto ANTES de llamar a ShiftAtY, que pisa A y X
+    lda carX,x
     sta tmp1                ; X en coordenadas de pista
-    lda rivalYHi,x
+    lda carY,x
     sta tmp2
-    lda rivalPal,x
-    clc
-    adc #1                  ; paletas 1 o 2
+    lda carPal,x
     sta tmp3
     lda tmp2
     jsr ShiftAtY            ; los rivales tambien siguen la curva
@@ -2320,10 +2364,10 @@ BuildOAM:
     jsr PutCar
     pla
     tax
-@rvnext:
     inx
-    cpx #4
+    cpx carCount
     bne @rv
+@carsdone:
 
     ; apagar el resto de los sprites
     ldx oamIdx
@@ -2429,27 +2473,30 @@ BuildHudRow2:
     jsr PutChar
     rts
 
-rankY: .byte RANK_Y, RANK_Y+8, RANK_Y+16, RANK_Y+24, RANK_Y+32
+rankY: .byte RANK_Y, RANK_Y+RANK_SEP, RANK_Y+2*RANK_SEP
 
-; Ventana movil de 5 lineas alrededor del jugador (2 arriba, el jugador, 2
-; abajo), formato "P07GAS": puesto a dos digitos + codigo de 3 letras, sin
-; sprite para el separador (el espaciado sale de la posicion X, no de un
-; caracter). La linea del jugador no tiene paleta de sprite libre para
-; resaltarse con color (las 4 ya estan asignadas: jugador, rival rojo, rival
-; plateado, texto), asi que lleva un '!' adelante.
+; Ventana movil de 3 lineas: el que tenes adelante, vos, y el que tenes
+; atras. Es la informacion que de verdad sirve manejando -- contra quien
+; estas peleando -- y con tres lineas separadas 16 px (el doble de un tile)
+; se lee mucho mejor que las cinco apretadas de antes.
 ;
-; Cerca de los extremos (lider, ultimo) la ventana se desliza en vez de
-; mostrar puestos invalidos: arranca en clamp(puesto_jugador-2, 0, 17).
+; Formato "P07 GAS": el separador no gasta un sprite, sale de la posicion X.
+; La linea del jugador no tiene paleta de sprite libre para resaltarse con
+; color (las 4 ya estan asignadas: jugador, rival rojo, rival plateado,
+; texto), asi que lleva un '!' adelante.
+;
+; En los extremos la ventana se desliza en vez de mostrar puestos que no
+; existen: de puntero muestra P1-P2-P3 (o sea vos y los dos de atras), y de
+; ultimo los dos de adelante y vos.
 BuildRankWindow:
     lda rankOf+PLAYER_SLOT
-    cmp #2
-    bcs :+
-    lda #2                  ; forzar >=2 para que la resta no de negativo
+    bne :+
+    lda #1                  ; puntero: arrancar en P1 para no salirse por arriba
 :   sec
-    sbc #2
-    cmp #NUM_DRIVERS-4       ; 18 = uno mas que el maximo valido (17)
+    sbc #1
+    cmp #NUM_DRIVERS-RANK_LINES+1
     bcc :+
-    lda #NUM_DRIVERS-5
+    lda #NUM_DRIVERS-RANK_LINES
 :   sta rankStart
 
     lda #0
@@ -2512,9 +2559,9 @@ BuildRankWindow:
     ldx rankX
     ldy rankScrY
     jsr PutChar
-    lda rankX                ; +8: el ancho real de un tile, no +1
-    clc
-    adc #8
+    lda rankX                ; +12: deja un hueco antes del codigo, para que
+    clc                      ; "P07 GAS" se lea separado sin gastar un sprite
+    adc #12
     sta rankX
 
     ldx rankDrv
@@ -2543,7 +2590,7 @@ BuildRankWindow:
 
     inc rankLine
     lda rankLine
-    cmp #5
+    cmp #RANK_LINES
     beq @done
     jmp @line                ; bne no llega: el cuerpo del loop es largo
 @done:

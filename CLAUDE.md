@@ -28,19 +28,20 @@ el código. Antes de tocar cualquier cosa de la simulación, leelo.
 Lo que hay hoy en la ROM es la **base del motor**, no el juego final:
 
 - Pantalla de título → carrera de 3 vueltas → pantalla de meta con el tiempo
-- Acelerador, freno, dirección, penalización por irse al pasto
-- 4 rivales genéricos con carril y velocidad aleatorios, colisiones con rebote
-  (decorativos: no tienen relación con la simulación de posiciones)
-- **Circuito con curvas**, dibujado por filas escritas en el NMI
+- Acelerador, freno, dirección, penalización por irse al pasto o a la grava
+- **Circuito con curvas**, dibujado por filas escritas en el NMI, con grava
+  entre el piano y el pasto
 - **Los 22 pilotos de la temporada 2026**, simulados por distancia total
-  (tabla en `BANK3`, primer uso real del banking de MMC1). HUD con puesto,
-  ventana móvil de 5 líneas alrededor del tuyo, y clasificación completa con
-  SELECT
-- HUD con vuelta actual y velocidad en km/h
+  (tabla en `BANK3`, primer uso real del banking de MMC1). Los autos que se
+  ven en pantalla **son** los rivales de la clasificación que tenés cerca:
+  adelantar en pantalla es adelantar de verdad
+- HUD con vuelta, puesto y velocidad, ventana de 3 líneas con el de adelante
+  / vos / el de atrás, y clasificación completa de los 22 con SELECT
 - Motor por canal de ruido atado a la velocidad, blips de vuelta y choque
 
-No hay todavía: qualy, boxes, gomas ni ERS. Sin qualy, los 22 arrancan en
-distancia 0 (largada en punta); el orden real sale de correr, no de un grid.
+No hay todavía: qualy, boxes, gomas ni ERS. Sin qualy no hay parrilla real:
+los 22 se escalonan `GRID_STEP` unidades en el orden de la tabla y el jugador
+larga desde el medio del pelotón.
 
 ## Dos bloqueantes antes de agregar contenido
 
@@ -147,6 +148,12 @@ Estas son las que más se olvidan y las que más bugs generan:
   por eso el código resta 1.
 - La paleta es la del NES: 64 colores fijos, sin RGB libre. `$12` azul Alpine,
   `$16` rojo, `$10` gris plata, `$0F` negro.
+- **El texto de sprites va en negro**, no en el naranja del fondo. El HUD y la
+  ventana de posiciones se dibujan encima de la pista, donde el fondo cambia
+  todo el tiempo (pasto verde, piano rojo, piano blanco, asfalto gris): ningún
+  color claro se lee sobre el rojo **y** el blanco a la vez. El negro es el
+  único que contrasta contra los cuatro. La fuente de fondo sigue naranja
+  porque sus pantallas (título, clasificación, meta) son sobre negro.
 - Los atributos de fondo son por bloques de 16x16 px, así que un cambio de
   paleta no puede caer en el medio de un bloque. El piano mide 2 tiles de ancho
   justamente por eso.

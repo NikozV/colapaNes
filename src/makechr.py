@@ -80,9 +80,9 @@ def font_tile(ch, color='3'):
         rows.append("." + line + "..")
     return tile(rows)
 
-def add_font(target):
+def add_font(target, color='3'):
     for ch in FONT:
-        target[ord(ch)] = font_tile(ch)
+        target[ord(ch)] = font_tile(ch, color)
 
 # ---------------------------------------------------------------- fondo
 GRASS_A = tile([
@@ -138,8 +138,24 @@ ROAD_EDGE_L = tile([
  "22111111",
 ])
 
+# Grava del costado de la pista. Usa el color 3 de la paleta del pasto, que
+# el pasto no usa (GRASS_A/B son solo colores 1 y 2), asi que entra sin tocar
+# los atributos: comparte bloque de paleta con el pasto y el limite de 16 px
+# de los atributos sigue cayendo en el borde del piano, como antes.
+GRAVEL = tile([
+ "33.33333",
+ "3333.333",
+ ".3333333",
+ "33333.33",
+ "333.3333",
+ "3333333.",
+ "3.333333",
+ "33333.33",
+])
+
 TILES_BG[0x01] = GRASS_A
 TILES_BG[0x02] = GRASS_B
+TILES_BG[0x08] = GRAVEL
 TILES_BG[0x03] = ROAD
 TILES_BG[0x04] = ROAD_DASH
 TILES_BG[0x05] = CURB_A
@@ -180,7 +196,15 @@ def metasprite(art):
 car_tiles = metasprite(CAR)
 for i, t in enumerate(car_tiles):
     TILES_SPR[0x80 + i] = t
-add_font(TILES_SPR)
+
+# La fuente de SPRITES va en el color 2 de su paleta, que en la paleta 3 es
+# $0F (negro). El HUD y la ventana de posiciones se dibujan encima de la
+# pista, y ahi el fondo cambia todo el tiempo: pasto verde, piano rojo,
+# piano blanco y asfalto gris. Ningun color claro se lee sobre el rojo Y el
+# blanco a la vez -- el negro es el unico que contrasta contra los cuatro.
+# La fuente de FONDO sigue en el color 3 (naranja), que es la de las
+# pantallas de titulo, clasificacion y meta, todas sobre negro.
+add_font(TILES_SPR, color='2')
 
 # ---------------------------------------------------------------- armado
 def build(d):

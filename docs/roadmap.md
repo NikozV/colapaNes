@@ -59,16 +59,19 @@ completa (fase 2). Lo que quedo pendiente:
   primero es siempre lo cosmetico -- pero el parpadeo en si no se elimino,
   se acepto como limitacion de hardware (misma categoria que las curvas
   escalonadas del punto 3).
-- **El trafico visual y el ranking real son sistemas separados a proposito**
-  (decision tomada con el usuario en la fase 2): los 4 autos que se ven en
-  pantalla son decorativos, sin relacion con quien esta cerca tuyo en la
-  tabla de posiciones. Unificarlos -- que el auto que tenes al lado sea
-  literalmente tu vecino de posicion -- daria mas coherencia visual, pero
-  implica reescribir el spawn/comportamiento de rivales de la fase 1
-  (curvas incluidas) para que sigan la distancia real en vez de una fisica
-  de velocidad relativa aleatoria. Bastante mas riesgo que beneficio para
-  esta fase; queda como candidato si mas adelante hace falta.
+- ~~El trafico visual y el ranking real son sistemas separados~~ **Unificados
+  despues de jugarlo.** El plan original los dejaba separados (los 4 autos en
+  pantalla eran decorativos), pero al probar la ROM se notaba enseguida que
+  pasabas autos que no estaban en la carrera. Ahora `BuildCars` toma los
+  puestos vecinos al del jugador y los ubica en pantalla segun la diferencia
+  de distancia total: adelantar en pantalla es adelantar en la tabla.
 - **El pace de los 21 IA es una constante fija por piloto**, sin variacion
   segun el circuito ni condiciones de carrera (solo un reroll chico por
   vuelta, ver `ApplyLapVariation`). Cuando existan gomas (fase 4) el pace
   real va a depender del desgaste, no solo de la tabla estatica.
+- **La IA no reacciona al jugador**: no defiende, no se equivoca, no frena
+  detras de otro auto. Avanza a ritmo constante pase lo que pase. Los autos
+  se pueden superponer entre si en pantalla (solo el jugador colisiona).
+- **El carril de cada auto sale de su indice de piloto**, no de una decision
+  de carrera: dos rivales que corren juntos siempre van a estar en los mismos
+  dos carriles. Alcanza para que no se tapen, pero no hay lucha por la linea.
