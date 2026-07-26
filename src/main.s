@@ -46,11 +46,12 @@ AIPACE_HI   = 3         ; parte entera del pace de los IA (paceLo da la fraccion
 RANK_X      = 0         ; ventana de posiciones: margen izquierdo, fuera del asfalto
 RANK_Y      = 40        ; debajo del HUD (filas 1 y 2 en Y=8/16)
 RANK_LINES  = 3         ; el de adelante, vos, el de atras
-RANK_SEP    = 16        ; separacion entre lineas (el doble de un tile: se lee mejor)
-MAX_CARS    = 6         ; tope de autos dibujados a la vez (presupuesto de OAM)
+RANK_SEP    = 8         ; lineas pegadas: forman un panel negro solido
+MAX_CARS    = 5         ; tope de autos dibujados a la vez (presupuesto de OAM)
 PLAYER_START = 256      ; distancia inicial del jugador (deja lugar para que
                         ; los de atras arranquen con distancia menor)
 GRID_STEP   = 24        ; separacion de la parrilla provisoria, en unidades
+DEFEND_RANGE = 40       ; a que distancia un rival se pone a defender
 
 T_GRASS_A = $01
 T_GRASS_B = $02
@@ -156,7 +157,7 @@ carY:       .res MAX_CARS   ; Y en pantalla
 carPal:     .res MAX_CARS
 carCount:   .res 1
 
-.export carCount, carDrv, carY
+.export carCount, carDrv, carX, carY
 
 rowBuf:     .res 32         ; la fila que el NMI va a mandar a la PPU
 attrBuf:    .res 8          ; la fila de atributos del bloque
@@ -193,12 +194,13 @@ pilotCode1: .res NUM_DRIVERS
 pilotCode2: .res NUM_DRIVERS
 pilotTeam:  .res NUM_DRIVERS   ; team_id 0..10
 teamPaceLo: .res NUM_DRIVERS   ; parte fraccionaria del pace (0 en PLAYER_SLOT)
+defBonus:   .res NUM_DRIVERS   ; cuanto aprieta cada uno defendiendo
 
 teamName0:  .res 11            ; abreviatura de equipo, 3 letras
 teamName1:  .res 11
 teamName2:  .res 11
 
-.export pilotCode0, pilotCode1, pilotCode2, pilotTeam, teamPaceLo
+.export pilotCode0, pilotCode1, pilotCode2, pilotTeam, teamPaceLo, defBonus
 
 ;=============================================================================
 ; MMC1
@@ -294,6 +296,8 @@ CopyPilotTable:
     sta pilotTeam,x
     lda teamPaceLoTab,x
     sta teamPaceLo,x
+    lda defBonusTab,x
+    sta defBonus,x
     inx
     cpx #NUM_DRIVERS
     bne @drivers
@@ -357,48 +361,87 @@ pilotCode2Tab: .byte "RACMRDSTBIORWNLROASLRT"
 pilotTeamTab:
     .byte 0,0,1,1,2,2,3,3,4,4,5,5,6,6,7,7,8,8,9,9,10,10
 
-; paceLo = 38 + (ritmo_equipo + habilidad - 159) * 13/4. Constante de
+; paceLo = 38 + (ritmo_equipo + habilidad - 159) * 5. Constante de
 ; ensamblado: la resuelve ca65, no el 6502.
 ;
 ; CALIBRADO CONTRA MEDICIONES REALES, no contra una suposicion. Corriendo la
-; ROM en el emulador, el jugador rinde:
+; ROM en el emulador con un piloto automatico, el jugador rinde:
 ;
-;     manejando bien (siguiendo el asfalto)   ~3.49 unidades/cuadro
-;     solo apretando A (se lleva por delante)  ~3.19
-;     perfecto (sin chocar nunca)               4.00
+;     solo apretando A (se lleva todo por delante)  ~3.19 unidades/cuadro
+;     siguiendo el asfalto                          ~3.49
+;     ademas esquivando, o sea sin chocar           ~3.82
+;     perfecto (nunca choca, nunca se sale)          4.00
 ;
-; Con AIPACE_HI=3 el rango de la IA queda 3.148 (LIN) a 3.555 (VER), o sea
-; montado justo encima del rendimiento del jugador en vez de por debajo:
-; manejando bien terminas ~P5, solo apretando A ~P18, y para ganar hay que
-; manejar casi perfecto. La version anterior (AIPACE_HI=2, rango 2.375-2.625)
-; quedaba entera por DEBAJO del jugador y por eso se ganaba siempre sin
-; importar como manejaras.
+; El rango de la IA va de 3.148 (LIN) a 3.773 (VER). Ningun rival tiene ritmo
+; BASE por encima de un jugador limpio: a cualquiera lo podes alcanzar. Pero
+; los cuatro de arriba, DEFENDIENDO (ver defBonusTab), pasan de 3.82, asi que
+; para pasarlos hay que estar cerca del 4.00. De ahi que se pueda subir hasta
+; el podio manejando limpio, pero ganar exija manejar casi perfecto.
 ;
-; GAS (Alpine) da 64, en el tercio bajo -> "medio de parrilla", como pide la
-; regla de diseno. El spread chico ademas mantiene el peloton junto.
+; Dos versiones anteriores quedaron cortas: la primera puso la IA entera por
+; DEBAJO del jugador (se ganaba siempre pasara lo que pasara), y la segunda
+; la dejo por debajo de un jugador que ademas esquiva (se ganaba siempre
+; siempre que no chocaras). Las dos se detectaron jugando, no leyendo.
+;
+; GAS (Alpine) queda en el tercio bajo -> "medio de parrilla", como pide la
+; regla de diseno.
 teamPaceLoTab:
-    .byte 38+(95+95-159)*13/4   ; NOR
-    .byte 38+(95+94-159)*13/4   ; PIA
-    .byte 38+(92+95-159)*13/4   ; LEC
-    .byte 38+(92+93-159)*13/4   ; HAM
-    .byte 38+(92+99-159)*13/4   ; VER
-    .byte 38+(92+85-159)*13/4   ; HAD
-    .byte 38+(90+93-159)*13/4   ; RUS
-    .byte 38+(90+87-159)*13/4   ; ANT
-    .byte 38+(85+88-159)*13/4   ; ALB
-    .byte 38+(85+90-159)*13/4   ; SAI
-    .byte 38+(84+92-159)*13/4   ; ALO
-    .byte 38+(84+78-159)*13/4   ; STR
-    .byte 38+(83+82-159)*13/4   ; LAW
-    .byte 38+(83+76-159)*13/4   ; LIN
-    .byte 38+(82+87-159)*13/4   ; HUL
-    .byte 38+(82+82-159)*13/4   ; BOR
-    .byte 38+(82+85-159)*13/4   ; OCO
-    .byte 38+(82+84-159)*13/4   ; BEA
-    .byte 38+(80+87-159)*13/4   ; GAS
+    .byte 38+(95+95-159)*5   ; NOR
+    .byte 38+(95+94-159)*5   ; PIA
+    .byte 38+(92+95-159)*5   ; LEC
+    .byte 38+(92+93-159)*5   ; HAM
+    .byte 38+(92+99-159)*5   ; VER
+    .byte 38+(92+85-159)*5   ; HAD
+    .byte 38+(90+93-159)*5   ; RUS
+    .byte 38+(90+87-159)*5   ; ANT
+    .byte 38+(85+88-159)*5   ; ALB
+    .byte 38+(85+90-159)*5   ; SAI
+    .byte 38+(84+92-159)*5   ; ALO
+    .byte 38+(84+78-159)*5   ; STR
+    .byte 38+(83+82-159)*5   ; LAW
+    .byte 38+(83+76-159)*5   ; LIN
+    .byte 38+(82+87-159)*5   ; HUL
+    .byte 38+(82+82-159)*5   ; BOR
+    .byte 38+(82+85-159)*5   ; OCO
+    .byte 38+(82+84-159)*5   ; BEA
+    .byte 38+(80+87-159)*5   ; GAS
     .byte 0                     ; COL - jugador, no se usa
-    .byte 38+(76+86-159)*13/4   ; PER
-    .byte 38+(76+85-159)*13/4   ; BOT
+    .byte 38+(76+86-159)*5   ; PER
+    .byte 38+(76+85-159)*5   ; BOT
+
+; Cuanto aprieta cada piloto cuando lo tenes encima, sale de su HABILIDAD:
+; (habilidad - 76) * 2, o sea 0 para el menos habil de la parrilla y 46 para
+; Verstappen. Es lo que hace que pasar a un Verstappen o un Hamilton cueste y
+; pasar a un colista no: el ritmo base lo pone el auto (ritmo_equipo), pero
+; pelear el paso lo pone el piloto.
+;
+; Con esto, defendiendo, VER llega a 3.74 unidades/cuadro y LIN se queda en su
+; 3.15. El jugador manejando bien rinde ~3.49 y perfecto 4.0: los de arriba
+; solo se pasan manejando casi perfecto, el fondo de parrilla se pasa
+; manejando bien.
+defBonusTab:
+    .byte (95-76)*2   ; NOR
+    .byte (94-76)*2   ; PIA
+    .byte (95-76)*2   ; LEC
+    .byte (93-76)*2   ; HAM
+    .byte (99-76)*2   ; VER
+    .byte (85-76)*2   ; HAD
+    .byte (93-76)*2   ; RUS
+    .byte (87-76)*2   ; ANT
+    .byte (88-76)*2   ; ALB
+    .byte (90-76)*2   ; SAI
+    .byte (92-76)*2   ; ALO
+    .byte (78-76)*2   ; STR
+    .byte (82-76)*2   ; LAW
+    .byte (76-76)*2   ; LIN
+    .byte (87-76)*2   ; HUL
+    .byte (82-76)*2   ; BOR
+    .byte (85-76)*2   ; OCO
+    .byte (84-76)*2   ; BEA
+    .byte (87-76)*2   ; GAS
+    .byte 0           ; COL - jugador
+    .byte (86-76)*2   ; PER
+    .byte (85-76)*2   ; BOT
 
 ; MCL FER RBR MER WIL AST RCB AUD HAA ALP CAD
 teamName0Tab: .byte "MFRMWARAHAC"
@@ -1780,9 +1823,39 @@ UpdateAI:
 @lp:
     cpx #PLAYER_SLOT
     beq @next                ; el jugador se sincroniza aparte, no aca
+    lda teamPaceLo,x
+    sta tmp1                 ; ritmo de este cuadro, antes de defender
+
+    ; Lo tenes encima? Si la diferencia de distancia contra el jugador entra
+    ; en +-DEFEND_RANGE, el rival se pone a defender y aprieta segun su
+    ; habilidad. Es lo que hace que un Verstappen te pelee el paso y un
+    ; colista no. Vale para los dos lados: si lo pasaste, te lo devuelve.
+    lda totalLo,x
+    sec
+    sbc plyTotalLo
+    sta tmp2
+    lda totalHi,x
+    sbc plyTotalHi
+    beq @adelante            ; alto 0 -> el rival te saca poco
+    cmp #$FF
+    bne @sinpelea            ; ni 0 ni -1 -> esta lejos, ni se entera
+    lda tmp2                 ; alto $FF -> lo tenes adelante por poco
+    cmp #256-DEFEND_RANGE
+    bcs @pelea
+    bcc @sinpelea
+@adelante:
+    lda tmp2
+    cmp #DEFEND_RANGE
+    bcs @sinpelea
+@pelea:
+    lda tmp1
+    clc
+    adc defBonus,x
+    sta tmp1
+@sinpelea:
     lda paceFrac,x
     clc
-    adc teamPaceLo,x
+    adc tmp1
     sta paceFrac,x           ; el acarreo de esta suma es lo que se usa abajo
     lda totalLo,x
     adc #AIPACE_HI            ; suma AIPACE_HI + el acarreo de paceFrac
@@ -1811,12 +1884,12 @@ ApplyLapVariation:
     sbc #3                    ; -3..+4, tratado como delta con signo
     clc
     adc teamPaceLo,x
-    cmp #30                   ; clamp al rango real de la tabla (38..142)
+    cmp #30                   ; clamp al rango real de la tabla (38..198)
     bcs :+
     lda #30
-:   cmp #161
+:   cmp #211
     bcc :+
-    lda #160
+    lda #210
 :   sta teamPaceLo,x
 @next:
     inx
@@ -2519,74 +2592,46 @@ BuildRankWindow:
     sta numHi
     jsr ToDigits             ; dig1 = decenas, dig0 = unidades
 
+    ; Los tiles de la fuente estan rellenos de negro, asi que los caracteres
+    ; van PEGADOS de a 8 px: cualquier hueco dejaria ver la pista en el medio
+    ; de la barra. El separador es un espacio de verdad (que ahora es un tile
+    ; negro solido), no un salto en X.
     lda #RANK_X
     sta rankX
-    lda rankStart
-    clc
+
+    lda rankStart            ; marcador del jugador; los demas llevan espacio,
+    clc                      ; asi las tres lineas arrancan alineadas
     adc rankLine
     cmp rankOf+PLAYER_SLOT
-    bne @drawP
+    bne :+
     lda #'!'
-    ldx rankX
-    ldy rankScrY
-    jsr PutChar
-    lda rankX                ; +8: el ancho real de un tile, no +1
-    clc
-    adc #8
-    sta rankX
-@drawP:
+    bne @mark                ; siempre: '!' != 0
+:   lda #' '
+@mark:
+    jsr RankPut
+
     lda #'P'
-    ldx rankX
-    ldy rankScrY
-    jsr PutChar
-    lda rankX                ; +8: el ancho real de un tile, no +1
-    clc
-    adc #8
-    sta rankX
+    jsr RankPut
     lda dig1
     clc
     adc #'0'
-    ldx rankX
-    ldy rankScrY
-    jsr PutChar
-    lda rankX                ; +8: el ancho real de un tile, no +1
-    clc
-    adc #8
-    sta rankX
+    jsr RankPut
     lda dig0
     clc
     adc #'0'
-    ldx rankX
-    ldy rankScrY
-    jsr PutChar
-    lda rankX                ; +12: deja un hueco antes del codigo, para que
-    clc                      ; "P07 GAS" se lea separado sin gastar un sprite
-    adc #12
-    sta rankX
+    jsr RankPut
+    lda #' '
+    jsr RankPut
 
     ldx rankDrv
     lda pilotCode0,x
-    ldx rankX
-    ldy rankScrY
-    jsr PutChar
-    lda rankX                ; +8: el ancho real de un tile, no +1
-    clc
-    adc #8
-    sta rankX
+    jsr RankPut
     ldx rankDrv
     lda pilotCode1,x
-    ldx rankX
-    ldy rankScrY
-    jsr PutChar
-    lda rankX                ; +8: el ancho real de un tile, no +1
-    clc
-    adc #8
-    sta rankX
+    jsr RankPut
     ldx rankDrv
     lda pilotCode2,x
-    ldx rankX
-    ldy rankScrY
-    jsr PutChar
+    jsr RankPut
 
     inc rankLine
     lda rankLine
@@ -2594,6 +2639,17 @@ BuildRankWindow:
     beq @done
     jmp @line                ; bne no llega: el cuerpo del loop es largo
 @done:
+    rts
+
+; A = caracter. Lo dibuja en la posicion actual de la linea y avanza un tile.
+RankPut:
+    ldx rankX
+    ldy rankScrY
+    jsr PutChar
+    lda rankX
+    clc
+    adc #8
+    sta rankX
     rts
 
 ; A = tile/char, X = x, Y = y   (paleta 3)

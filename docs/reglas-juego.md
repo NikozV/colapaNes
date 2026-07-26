@@ -314,14 +314,29 @@ distancia total: adelantar un auto en pantalla es adelantarlo de verdad en la
 tabla. (El primer intento de esta fase los mantuvo como sistemas separados, y
 jugándolo se notaba enseguida: pasabas autos que no estaban en la carrera.)
 
-**Calibración del ritmo, medida y no supuesta.** Corriendo la ROM en el
-emulador, el jugador rinde ~3.49 unidades/cuadro manejando bien, ~3.19 solo
-apretando acelerador, y 4.0 en el caso perfecto. El rango de la IA quedó
-montado justo encima de esos números (3.148 a 3.555) en vez de por debajo:
-manejando bien terminás alrededor de P5, solo apretando A terminás último, y
-para ganar hay que manejar casi perfecto. La primera versión tenía la IA
-entera por debajo del jugador y se ganaba siempre sin importar cómo
-manejaras.
+**Calibración del ritmo, medida y no supuesta.** Corriendo la ROM con un
+piloto automático, el jugador rinde ~3.19 unidades/cuadro solo apretando
+acelerador, ~3.49 siguiendo el asfalto, ~3.82 esquivando además los autos, y
+4.00 en el caso perfecto. El rango de la IA va de 3.148 a 3.773.
+
+La regla de la calibración: **ningún rival corre más rápido que un jugador
+limpio** (a cualquiera lo podés alcanzar), pero los de arriba, cuando los
+tenés encima, **defienden** y ahí sí te superan. Los choques pasan a ser lo
+que decide la carrera: en la simulación, los 5 choques de un piloto
+automático decente equivalen casi exactamente a las 980 unidades con que el
+líder le gana.
+
+Hicieron falta tres pasadas, cada una detectada jugando y no leyendo: la
+primera dejó la IA entera por debajo del jugador (se ganaba siempre), la
+segunda por debajo de un jugador que esquiva (se ganaba siempre que no
+chocaras), y recién la tercera obligó a manejar limpio *y* pelear.
+
+**Defensa por piloto** (`defBonusTab`): cuando el jugador entra en
+`DEFEND_RANGE`, el rival aprieta según su **habilidad**, no según su auto —
+`(habilidad - 76) * 2`. Verstappen aprieta 46, el último de la parrilla 0. Es
+lo que hace que pasar a un piloto de jerarquía cueste y pasar a un colista
+no: el ritmo base lo pone el equipo, pelear el paso lo pone el piloto. Vale
+para los dos lados, así que si lo pasás te lo intenta devolver.
 
 **Fase 3 — Qualy y parrilla.** Estado nuevo, salida de boxes, cronómetro,
 generación de tiempos de la IA, pantalla de parrilla, y la carrera largando
