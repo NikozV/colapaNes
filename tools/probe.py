@@ -146,10 +146,14 @@ check(g.peek('playerPos') == pole_jugador,
 base_largada = g.peek('plyTotalHi') * 256 + g.peek('plyTotalLo')
 
 print('\n== Acelerar ==')
-g.run(180, A)
+# Con la pista angosta (80 px de margen) ir 180 cuadros sin girar puede
+# sacarte del asfalto apenas el circuito empieza a curvar, y eso topa la
+# velocidad -- no es lo que este bloque quiere medir. Se sigue el asfalto
+# (como el resto de los bloques) para aislar la aceleracion en si.
+g.drive(180)
 check(g.peek('spdHi') >= 3, f"acelera hasta el tope (spdHi={g.peek('spdHi')})")
 d0 = g.dist
-g.run(60, A)
+g.drive(60)
 check(g.dist > d0, 'la distancia recorrida avanza')
 
 print('\n== Los 22 pilotos ==')
@@ -331,7 +335,7 @@ print('\n== El circuito curva ==')
 # error de una columna rompe la alineacion de las paletas, asi que se verifica
 # el perfil entero de la pantalla, no solo que cambie.
 CC_BASE = g.labels['rowCC']
-TRACK_CC, PLAYER_ROW = 16, 168 // 8
+TRACK_CC, PLAYER_ROW = 12, 168 // 8   # ver TRACK_CC en src/main.s (pista angosta)
 
 
 def perfil(g, top=None):
@@ -356,7 +360,14 @@ print('\n== Clasificacion completa (SELECT) ==')
 # nametables que usa el circuito curvo (Fase 1). Verifica: que el estado se
 # congele de verdad, que se retome exacto al salir, y que el circuito no
 # haya quedado roto por reusar esas nametables para texto.
-perfil_antes = perfil(g)
+# La tabla COMPLETA (60 filas), no la ventana visible: perfil() depende de
+# topRow, que avanza con los pocos cuadros reales que toma detectar la
+# transicion de SELECT (documentado mas abajo) -- comparar la ventana da
+# falsos positivos porque se corre, sin que el circuito este roto. rowCC[60]
+# en cambio nadie lo escribe mientras esta congelado (solo UpdateTrack
+# escribe ahi, y no corre durante ST_CLASS), asi que tiene que quedar
+# identico byte a byte pase lo que pase con el timing.
+rowcc_antes = [g.peek(CC_BASE + i) for i in range(60)]
 dist_antes = g.peek('distLo')
 scroll_antes = g.peek('scrollLo')
 
@@ -394,7 +405,8 @@ check(0 <= (dist_post - dist_ref) % 256 <= 12,
       f'la distancia retoma donde estaba (era {dist_ref}, quedo {dist_post})')
 check(scroll_post != 0 and abs(scroll_post - scroll_antes) <= 12,
       f'el scroll retoma donde estaba, no en 0 (era {scroll_antes}, quedo {scroll_post})')
-check(perfil(g) == perfil_antes, 'el circuito no se rompe al ir y volver de la clasificacion')
+rowcc_despues = [g.peek(CC_BASE + i) for i in range(60)]
+check(rowcc_despues == rowcc_antes, 'el circuito no se rompe al ir y volver de la clasificacion')
 g.run(8, 0)
 
 print('\n== Salirse de la pista ==')
@@ -406,7 +418,7 @@ g.start_race()
 
 # Con el circuito curvo el borde ya no esta en una X fija. El test recalcula
 # el borde igual que el juego y verifica que offRoad coincida cuadro a cuadro.
-ROAD_L, ROAD_R = 48, 192
+ROAD_L, ROAD_R = 48, 128   # ver ROAD_L/ROAD_R en src/main.s (pista angosta)
 
 
 def espera_offroad(g, top_antes):

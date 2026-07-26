@@ -32,21 +32,33 @@ ST_QUALY  = 4
 ST_GRID   = 5
 
 PLAYER_Y  = 168
-ROAD_L    = 48          ; borde izquierdo del asfalto (px)
-ROAD_R    = 192         ; x maximo del auto para seguir en pista
+; GEOMETRIA DEL CIRCUITO
+; El circuito mide 16 tiles (2 de piano + 12 de asfalto + 2 de piano) y vive
+; en las columnas 0..24. Las columnas 25..30 quedan libres para el panel de
+; datos, que asi no tapa nunca la pista: el borde derecho del asfalto llega
+; como maximo a x=175 y el panel empieza en x=200.
+;
+; Antes el asfalto media 160 px, o sea diez autos de ancho: se veia
+; desproporcionado y no dejaba lugar para el panel ni, mas adelante, para los
+; boxes. Ahora mide 96 px, seis autos.
+TRACK_HW  = 8           ; media anchura del circuito, en tiles
+ROAD_L    = 48          ; borde izquierdo del asfalto (px, en coords de pista)
+ROAD_R    = 128         ; x maximo del auto para seguir entero en el asfalto
 MAXSPD_HI = 4           ; velocidad maxima (px/frame)
 LAP_LEN   = 3000        ; unidades de distancia por vuelta
 TOTAL_LAPS = 3
-TRACK_CC  = 16          ; columna del centro del asfalto en la recta
-CC_MIN    = 12          ; el circuito no puede correrse mas alla de estos
-CC_MAX    = 20          ; limites sin salirse de las 32 columnas
+TRACK_CC  = 12          ; columna del centro del asfalto en la recta
+CC_MIN    = 8           ; el circuito no puede correrse mas alla de estos
+CC_MAX    = 16          ; limites sin invadir la franja del panel
+PLAYER_X0 = 87          ; x inicial del auto: el medio del asfalto
+HUD_X     = 200         ; columna donde arranca el panel de datos
 
 NUM_AI      = 21
 NUM_DRIVERS = 22
 PLAYER_SLOT = 19        ; indice 0-based de COL en la tabla de 22 pilotos
 AIPACE_HI   = 3         ; parte entera del pace de los IA (paceLo da la fraccion)
-RANK_X      = 0         ; ventana de posiciones: margen izquierdo, fuera del asfalto
-RANK_Y      = 40        ; debajo del HUD (filas 1 y 2 en Y=8/16)
+RANK_X      = HUD_X     ; la ventana va en el panel, igual que el resto
+RANK_Y      = 48        ; debajo de vuelta, puesto y velocidad
 RANK_LINES  = 3         ; el de adelante, vos, el de atras
 RANK_SEP    = 8         ; lineas pegadas: forman un panel negro solido
 MAX_CARS    = 5         ; tope de autos dibujados a la vez (presupuesto de OAM)
@@ -950,7 +962,7 @@ GoQualy:
     sta rowReady
     jsr DrawTrack
 
-    lda #120
+    lda #PLAYER_X0
     sta playerX
     lda #0
     sta playerXf
@@ -1068,45 +1080,45 @@ BuildOAMQualy:
     jsr PutCar
 
     lda #'V'
-    ldx #16
+    ldx #HUD_X
     ldy #8
     jsr PutChar
     lda qualyLap
     clc
     adc #'0'
-    ldx #24
+    ldx #HUD_X+8
     ldy #8
     jsr PutChar
     lda #'/'
-    ldx #32
+    ldx #HUD_X+16
     ldy #8
     jsr PutChar
     lda #'2'
-    ldx #40
+    ldx #HUD_X+24
     ldy #8
     jsr PutChar
 
     ; cronometro SS.CC, o "-----" si la vuelta ya esta anulada
     lda lapValid
     bne @crono
-    ldx #16
+    ldx #HUD_X
     ldy #16
     lda #'-'
     jsr PutChar
     lda #'-'
-    ldx #24
+    ldx #HUD_X+8
     ldy #16
     jsr PutChar
     lda #'-'
-    ldx #32
+    ldx #HUD_X+16
     ldy #16
     jsr PutChar
     lda #'-'
-    ldx #40
+    ldx #HUD_X+24
     ldy #16
     jsr PutChar
     lda #'-'
-    ldx #48
+    ldx #HUD_X+32
     ldy #16
     jsr PutChar
     jmp @clr
@@ -1119,29 +1131,29 @@ BuildOAMQualy:
     lda tmp5
     clc
     adc #'0'
-    ldx #16
+    ldx #HUD_X
     ldy #16
     jsr PutChar
     lda tmp6
     clc
     adc #'0'
-    ldx #24
+    ldx #HUD_X+8
     ldy #16
     jsr PutChar
     lda #'.'
-    ldx #32
+    ldx #HUD_X+16
     ldy #16
     jsr PutChar
     lda dig1
     clc
     adc #'0'
-    ldx #40
+    ldx #HUD_X+24
     ldy #16
     jsr PutChar
     lda dig0
     clc
     adc #'0'
-    ldx #48
+    ldx #HUD_X+32
     ldy #16
     jsr PutChar
 
@@ -1478,7 +1490,7 @@ StartRace:
     sta rowReady
     jsr DrawTrack
 
-    lda #120
+    lda #PLAYER_X0
     sta playerX
     lda #0
     sta playerXf
@@ -1768,15 +1780,17 @@ UpdatePlayer:
 
 @move:
     ; limites de pantalla
+    ; Limites de pantalla. Por la derecha no se llega hasta el borde: el auto
+    ; tiene que quedar afuera de la franja del panel de datos (HUD_X).
     lda playerX
-    cmp #24
+    cmp #8
     bcs :+
-    lda #24
+    lda #8
     sta playerX
 :   lda playerX
-    cmp #208
+    cmp #HUD_X-16
     bcc :+
-    lda #208
+    lda #HUD_X-16
     sta playerX
 :
     ; fuera de pista? El circuito se corre, asi que el borde no es fijo: hay
@@ -1971,14 +1985,14 @@ BuildRow:
     sec
     sbc genCC
     clc
-    adc #12
-    cmp #24                 ; e >= 24: se paso del circuito (o quedo negativo,
+    adc #TRACK_HW
+    cmp #2*TRACK_HW         ; e >= 16: se paso del circuito (o quedo negativo,
     bcs @outside            ; que envuelve por arriba). Grava o pasto.
     cmp #2
     bcc @curb
-    cmp #22
+    cmp #2*TRACK_HW-2
     bcs @curb
-    cmp #11
+    cmp #TRACK_HW-1         ; la raya del medio
     bne @road
     lda genRow              ; la raya del medio va cortada
     and #1
@@ -2002,8 +2016,8 @@ BuildRow:
 ; no toca), asi que no agrega ningun limite de paleta nuevo: los atributos
 ; siguen siendo los mismos que sin grava.
 @outside:
-    cmp #26
-    bcc @gravel             ; e = 24,25 -> grava del lado derecho
+    cmp #2*TRACK_HW+2
+    bcc @gravel             ; e = 16,17 -> grava del lado derecho
     cmp #254
     bcs @gravel             ; e = 254,255 (o sea -2,-1) -> grava del izquierdo
     jmp @grass
@@ -2077,8 +2091,10 @@ SetRowAddr:
 
 ; Circuito: pares (bloques, cuanto se corre el centro por bloque). Arranca y
 ; termina en TRACK_CC para que el lazo cierre sin salto.
+; Recorrido del centro, arrancando y terminando en TRACK_CC (12) para que el
+; lazo cierre sin salto: 12 -> 16 -> 8 -> 12 -> 8 -> 12.
 segLen:   .byte 12,  2,  8,  4,  8,  2, 10,  2,  6,  2
-segDelta: .byte  0,  2,  0, $FE, 0, $FE, 0,  2,  0,  2
+segDelta: .byte  0,  2,  0, $FE, 0,  2,  0, $FE, 0,  2
 NUM_SEG = 10
 
 ; Corre el centro del circuito un escalon. Se llama una vez por bloque.
@@ -2114,12 +2130,12 @@ ColPal:
     sec
     sbc genCC
     clc
-    adc #12                 ; e, igual que en BuildRow
+    adc #TRACK_HW           ; e, igual que en BuildRow
     beq @curb               ; e = 0    -> piano izquierdo
-    cmp #22
-    beq @curb               ; e = 22   -> piano derecho
-    cmp #21
-    bcs @grass              ; e > 20 (o negativo, que envuelve alto)
+    cmp #2*TRACK_HW-2
+    beq @curb               ; e = 14   -> piano derecho
+    cmp #2*TRACK_HW-3
+    bcs @grass              ; e > 13 (o negativo, que envuelve alto)
     cmp #2
     bcc @grass
     lda #1                  ; asfalto
@@ -2233,73 +2249,135 @@ WriteRowNow:
 ; clasificacion. Antes eran sistemas separados y se veian autos que no eran
 ; de la carrera.
 ;=============================================================================
+; Cuatro carriles en los 96 px de asfalto (x 48..143 en coordenadas de
+; pista), en dos pares separados por un hueco central de 36 px. El auto va
+; SIEMPRE derecho por PLAYER_X0 (87, el medio geometrico de la pista) salvo
+; que lo corras vos: si un carril quedara a menos de 13 px de ahi (el radio
+; del choque), ir derecho por el medio de la pista chocaria SIEMPRE contra
+; cualquiera que este en ese carril -- el centro tiene que ser la linea mas
+; segura, no un iman. Los cuatro quedan a 17 px o mas de PLAYER_X0.
 laneX:
-    .byte 56, 92, 132, 168
+    .byte 52, 68, 104, 120
 
+; Recorre los 21 IA por INDICE, no por puesto: con el peloton compacto (los
+; ritmos quedaron a proposito muy juntos, ver teamPaceLoTab) puede haber mas
+; de MAX_CARS a la vez dentro de pantalla, y barrer solo una ventana de
+; puestos cercanos al del jugador se salteaba autos que si estaban en rango
+; -- se vio jugando, con carCount por debajo de lo que de verdad habia en
+; pantalla. Ahora se prueban los 22 y, cuando el cupo esta lleno, un
+; candidato nuevo desplaza al que este mas lejos del centro (Y=PLAYER_Y) si
+; el candidato esta mas cerca. Siempre quedan dibujados los MAX_CARS mas
+; cercanos de verdad, sin importar cuantos haya alrededor.
 BuildCars:
     lda #0
     sta carCount
-
-    ; arrancar unos puestos por delante del jugador y barrer hacia atras
-    lda rankOf+PLAYER_SLOT
-    sec
-    sbc #MAX_CARS/2+1
-    bcs :+
-    lda #0                   ; el jugador va puntero: barrer desde el primero
-:   sta tmp5                  ; tmp5 = puesto que se esta mirando
-@lp:
-    lda carCount
-    cmp #MAX_CARS
-    beq @done
-    lda tmp5
-    cmp #NUM_DRIVERS
-    bcs @done
-
-    ldy tmp5
-    lda orderTable,y
-    sta tmp6                  ; tmp6 = piloto de ese puesto
-    cmp #PLAYER_SLOT
-    beq @next                 ; al jugador lo dibuja BuildOAM aparte
-
-    ; y = PLAYER_Y - (total[rival] - total[jugador]), en 16 bits
-    ldy tmp6
-    lda totalLo,y
+    ldx #0
+@scan:
+    cpx #PLAYER_SLOT
+    bne :+
+    jmp @next                 ; al jugador lo dibuja BuildOAM aparte
+:
+    ; y = PLAYER_Y - (total[x] - total[jugador]), en 16 bits
+    lda totalLo,x
     sec
     sbc plyTotalLo
     sta tmp1
-    lda totalHi,y
+    lda totalHi,x
     sbc plyTotalHi
     sta tmp2
 
     lda #PLAYER_Y
     sec
     sbc tmp1
-    sta tmp3                  ; y lo
+    sta tmp3                  ; candidato: y de pantalla
     lda #0
     sbc tmp2
-    bne @next                 ; y no entra en un byte -> fuera de pantalla
-    lda tmp3
+    beq :+
+    jmp @next                 ; y no entra en un byte -> fuera de pantalla
+:   lda tmp3
     cmp #240
-    bcs @next                 ; abajo del borde inferior
+    bcc :+
+    jmp @next                 ; abajo del borde inferior
+:
 
-    ldx carCount
-    sta carY,x
-    lda tmp6
-    sta carDrv,x
+    ; distancia del candidato al centro de la pantalla (a mayor distancia,
+    ; mas facil de sacrificar si el cupo esta lleno)
+    lda tmp3
+    sec
+    sbc #PLAYER_Y
+    bcs @posdist
+    eor #$FF
+    clc
+    adc #1
+@posdist:
+    sta tmp4
+
+    lda carCount
+    cmp #MAX_CARS
+    bcc @append
+
+    ; cupo lleno: buscar el que este MAS LEJOS de los MAX_CARS actuales
+    ldy #0
+    lda carY,y
+    sec
+    sbc #PLAYER_Y
+    bcs :+
+    eor #$FF
+    clc
+    adc #1
+:   sta tmp5                  ; tmp5 = peor distancia vista hasta ahora
+    sty tmp6                  ; tmp6 = indice de ese slot
+    iny
+@worse:
+    cpy #MAX_CARS
+    beq @gotworst
+    lda carY,y
+    sec
+    sbc #PLAYER_Y
+    bcs :+
+    eor #$FF
+    clc
+    adc #1
+:   cmp tmp5
+    bcc @notworse
+    sta tmp5
+    sty tmp6
+@notworse:
+    iny
+    jmp @worse
+@gotworst:
+    lda tmp4
+    cmp tmp5
+    bcs @next                 ; el candidato no mejora al peor actual: afuera
+    ldy tmp6                  ; reemplaza ese slot
+    jmp @store
+
+@append:
+    ldy carCount
+    inc carCount
+
+@store:
+    stx tmp5                  ; guardar el indice de piloto: X se va a pisar
+    lda tmp3
+    sta carY,y
+    lda tmp5
+    sta carDrv,y
     and #3
-    tay
-    lda laneX,y               ; el carril sale del indice de piloto: los que
-    sta carX,x                ; corren juntos quedan en carriles distintos
-    ldy tmp6
-    lda pilotTeam,y
+    tax
+    lda laneX,x
+    sta carX,y
+    ldx tmp5
+    lda pilotTeam,x
     and #1
     clc
     adc #1                    ; paletas de sprite 1 o 2 (la 0 es del jugador)
-    sta carPal,x
-    inc carCount
+    sta carPal,y
+    ldx tmp5                  ; restaurar X: es el contador del scan principal
 @next:
-    inc tmp5
-    jmp @lp
+    inx
+    cpx #NUM_DRIVERS
+    beq @done
+    jmp @scan
 @done:
     rts
 
@@ -3138,21 +3216,21 @@ BuildOAM:
 ; --- HUD fila 1 (Y=8): V n / 3      y    velocidad
 BuildHud1:
     lda #'V'
-    ldx #16
+    ldx #HUD_X
     ldy #8
     jsr PutChar
     lda lapNum
     clc
     adc #'0'
-    ldx #24
+    ldx #HUD_X+8
     ldy #8
     jsr PutChar
     lda #'/'
-    ldx #32
+    ldx #HUD_X+16
     ldy #8
     jsr PutChar
     lda #'0'+TOTAL_LAPS
-    ldx #40
+    ldx #HUD_X+24
     ldy #8
     jsr PutChar
 
@@ -3187,28 +3265,29 @@ BuildHud1:
     lda dig2
     clc
     adc #'0'
-    ldx #192
-    ldy #8
+    ldx #HUD_X
+    ldy #24
     jsr PutChar
     lda dig1
     clc
     adc #'0'
-    ldx #200
-    ldy #8
+    ldx #HUD_X+8
+    ldy #24
     jsr PutChar
     lda dig0
     clc
     adc #'0'
-    ldx #208
-    ldy #8
+    ldx #HUD_X+16
+    ldy #24
     jsr PutChar
     rts
 
-; --- HUD fila 2 (Y=16): posicion, "P08". Fila propia y no la de arriba
-; porque esa ya usa 7 de los 8 sprites que entran por scanline.
+; --- puesto, "P08". Cada dato en su propia fila del panel: asi ninguna
+; scanline junta mas de 6 sprites del HUD y quedan dos libres para el auto
+; que pueda caer a esa altura, sin pasarse de los 8 por linea.
 BuildHudRow2:
     lda #'P'
-    ldx #16
+    ldx #HUD_X
     ldy #16
     jsr PutChar
     lda playerPos
@@ -3219,13 +3298,13 @@ BuildHudRow2:
     lda dig1
     clc
     adc #'0'
-    ldx #24
+    ldx #HUD_X+8
     ldy #16
     jsr PutChar
     lda dig0
     clc
     adc #'0'
-    ldx #32
+    ldx #HUD_X+16
     ldy #16
     jsr PutChar
     rts
@@ -3233,14 +3312,14 @@ BuildHudRow2:
 rankY: .byte RANK_Y, RANK_Y+RANK_SEP, RANK_Y+2*RANK_SEP
 
 ; Ventana movil de 3 lineas: el que tenes adelante, vos, y el que tenes
-; atras. Es la informacion que de verdad sirve manejando -- contra quien
-; estas peleando -- y con tres lineas separadas 16 px (el doble de un tile)
-; se lee mucho mejor que las cinco apretadas de antes.
+; atras. Es la informacion que de verdad sirve manejando: contra quien estas
+; peleando.
 ;
-; Formato "P07 GAS": el separador no gasta un sprite, sale de la posicion X.
-; La linea del jugador no tiene paleta de sprite libre para resaltarse con
-; color (las 4 ya estan asignadas: jugador, rival rojo, rival plateado,
-; texto), asi que lleva un '!' adelante.
+; Formato "!07GAS", 6 sprites justos, que es lo que entra en el panel (de
+; HUD_X al borde hay 6 columnas ocultando ademas el borde con overscan). El
+; "P" de "P07" se fue: el numero solo ya se entiende, y ese sprite era el que
+; no dejaba entrar el codigo. La linea del jugador no tiene paleta libre para
+; resaltarse con color (las 4 estan asignadas), asi que lleva el '!'.
 ;
 ; En los extremos la ventana se desliza en vez de mostrar puestos que no
 ; existen: de puntero muestra P1-P2-P3 (o sea vos y los dos de atras), y de
@@ -3294,8 +3373,6 @@ BuildRankWindow:
 @mark:
     jsr RankPut
 
-    lda #'P'
-    jsr RankPut
     lda dig1
     clc
     adc #'0'
@@ -3303,8 +3380,6 @@ BuildRankWindow:
     lda dig0
     clc
     adc #'0'
-    jsr RankPut
-    lda #' '
     jsr RankPut
 
     ldx rankDrv

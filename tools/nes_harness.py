@@ -114,14 +114,16 @@ class Game:
         }
 
     # ------------------------------------------------------------- atajos
-    TRACK_CC = 16               # centro del asfalto en la recta
+    TRACK_CC = 12               # centro del asfalto en la recta (ver src/main.s)
     PLAYER_ROW = 168 // 8       # fila de tiles donde va el auto
+    PLAYER_X0 = 87              # X de pantalla cuando el circuito esta recto
+                                 # (ver PLAYER_X0 en src/main.s)
 
     def track_center(self):
         """X de pantalla del centro del asfalto a la altura del auto."""
         cc = self.peek(self.labels['rowCC']
                        + (self.peek('topRow') + self.PLAYER_ROW) % 60)
-        return 120 + (cc - self.TRACK_CC) * 8
+        return self.PLAYER_X0 + (cc - self.TRACK_CC) * 8
 
     def drive(self, frames, extra=0, target=None, until=None):
         """Maneja siguiendo el asfalto, que es lo minimo para que el auto

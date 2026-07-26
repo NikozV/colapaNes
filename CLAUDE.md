@@ -36,8 +36,12 @@ Lo que hay hoy en la ROM es la **base del motor**, no el juego final:
   (tabla en `BANK3`, primer uso real del banking de MMC1). Los autos que se
   ven en pantalla **son** los rivales de la clasificación que tenés cerca:
   adelantar en pantalla es adelantar de verdad
-- HUD con vuelta, puesto y velocidad, ventana de 3 líneas con el de adelante
-  / vos / el de atrás, y clasificación completa de los 22 con SELECT
+- **Panel de datos unificado a la derecha** (`HUD_X`, columnas 25-30): vuelta,
+  puesto, velocidad y la ventana de 3 líneas (el de adelante / vos / el de
+  atrás), todo junto en una franja fuera de la pista — nunca tapa el asfalto,
+  verificado a nivel de píxel. Clasificación completa de los 22 con SELECT
+- **Pista de 16 tiles** (antes 24: diez autos de ancho, desproporcionado),
+  recentrada para dejarle lugar al panel sin invadirlo en ninguna curva
 - Motor por canal de ruido atado a la velocidad, blips de vuelta y choque
 
 No hay todavía: boxes, gomas ni ERS. De la qualy quedó afuera lo que depende
