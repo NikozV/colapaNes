@@ -66,10 +66,18 @@ van temprano en el orden de trabajo.
 make          # compila -> build/colapinto.nes
 make test     # corre la ROM en emulador y verifica que el juego funciona
 make shots    # capturas de cada pantalla -> build/shots/*.png
+make tools    # que herramientas encontro y con que version
+make deps     # instala las dependencias de Python
 make clean
 ```
 
-Dependencias: `apt install cc65` y `pip install -r requirements.txt`.
+**Puesta a punto del entorno: [`docs/entorno.md`](docs/entorno.md).** En Linux
+alcanza con `sudo apt install cc65 make` y `make deps`; en Windows hay que
+correr todo desde Git Bash y bajar cc65 a mano, que es un ZIP de binarios.
+
+Si falta algo, el Makefile lo detecta y dice qué instalar en vez de reventar
+con un `command not found`. `make tools` te lo muestra sin compilar nada. Y si
+cc65 está instalado pero afuera del PATH, `make CC65_BIN=/ruta/a/cc65/bin`.
 
 ## Regla de oro del workflow
 
@@ -204,6 +212,7 @@ pantalla no cambiaba entre cuadros. De ahí la regla de oro.
 | Archivo | Qué tiene |
 |---|---|
 | `docs/reglas-juego.md` | **Las reglas del juego.** Qualy, gomas, boxes, ERS, penalizaciones, los 22 pilotos, y las fases de implementación en orden |
+| `docs/entorno.md` | Cómo dejar la máquina en condiciones de correr `make test` (Linux, macOS y Windows) |
 | `docs/nes-cheatsheet.md` | Registros de PPU, OAM, atributos, paletas, timing NTSC |
 | `docs/roadmap.md` | Mejoras sueltas del motor, ordenadas por cuánto lo rompen |
 
