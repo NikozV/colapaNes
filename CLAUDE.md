@@ -28,7 +28,7 @@ el código. Antes de tocar cualquier cosa de la simulación, leelo.
 Lo que hay hoy en la ROM es la **base del motor**, no el juego final:
 
 - **Fin de semana completo**: título → qualy (vuelta de salida + lanzada) →
-  parrilla → carrera de 3 vueltas → meta. Se larga desde el puesto que sacaste
+  parrilla → carrera de 6 vueltas → meta. Se larga desde el puesto que sacaste
 - Acelerador, freno, dirección, penalización por irse al pasto o a la grava
 - **Circuito con curvas**, dibujado por filas escritas en el NMI, con grava
   entre el piano y el pasto
@@ -42,11 +42,20 @@ Lo que hay hoy en la ROM es la **base del motor**, no el juego final:
   verificado a nivel de píxel. Clasificación completa de los 22 con SELECT
 - **Pista de 16 tiles** (antes 24: diez autos de ancho, desproporcionado),
   recentrada para dejarle lugar al panel sin invadirlo en ninguna curva
+- **Gomas**: tres compuestos con desgaste y tope de velocidad dinámico por
+  tabla (`curCapHi/Lo`, 8.8), regla de los dos compuestos con descalificación
+- **Boxes**: carril de boxes ancho (piano + grava del lado derecho, para
+  leerse separado de la pista) por ventana de distancia alrededor de cada
+  cruce de vuelta, menú de parada (goma + ala) que se abre solo al
+  comprometerse, `pitStopTimer` con la IA corriendo mientras el jugador está
+  parado, y la parada abstraída de la IA para que la regla de los dos
+  compuestos no sea injusta
 - Motor por canal de ruido atado a la velocidad, blips de vuelta y choque
 
-No hay todavía: boxes, gomas ni ERS. De la qualy quedó afuera lo que depende
-de boxes (arrancar en el pit lane y su límite de velocidad) y de las gomas
-(que arranquen frías en la vuelta de salida).
+No hay todavía ERS. De la qualy quedó afuera lo que depende de boxes
+(arrancar en el pit lane y su límite de velocidad) y de las gomas (que
+arranquen frías en la vuelta de salida, que depende del ERS — ver
+`docs/reglas-juego.md` sección 5).
 
 **El cronómetro de la qualy cuenta cuadros, no segundos.** Las diferencias que
 deciden la parrilla son de décimas, y contar cuadros hace que comparar y
@@ -292,11 +301,13 @@ byte bajo = fracción). Los pares son `spdHi/spdLo`, `rivalYHi/rivalYLo`,
 Están todos juntos arriba de `src/main.s`:
 
 ```asm
-MAXSPD_HI  = 4      ; velocidad maxima (px por cuadro)
+MAXSPD_HI  = 4      ; velocidad maxima con gomas nuevas (px por cuadro);
+                     ; el tope real en carrera es curCapHi/Lo, que baja con
+                     ; el desgaste -- ver "Gomas" en docs/reglas-juego.md
 LAP_LEN    = 3000   ; unidades de distancia por vuelta
-TOTAL_LAPS = 3
+TOTAL_LAPS = 6
 ROAD_L     = 48     ; borde izquierdo del asfalto
-ROAD_R     = 192    ; borde derecho
+ROAD_R     = 128    ; borde derecho
 PLAYER_Y   = 168    ; altura fija del auto en pantalla
 ```
 
