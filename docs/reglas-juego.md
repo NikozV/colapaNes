@@ -190,10 +190,10 @@ máxima sube un 15 % y la barra baja. Con la barra en cero, no hay turbo.
 > hasta que el circuito tenga curvas. Ver `docs/roadmap.md` punto 5 y la
 > sección de fases más abajo.
 
-## 8. Clasificación en pantalla
+## 8. Clasificación en pantalla — HECHA (fase 2)
 
 Lo que pediste — el panel de la izquierda con los 22 pilotos y sus puestos —
-choca con una limitación real del hardware, así que se resuelve en dos partes.
+choca con una limitación real del hardware, así que se resolvió en dos partes.
 
 **Por qué no se puede tal cual**: el circuito hace scroll vertical, y el fondo
 es una sola capa. Un panel dibujado en el fondo **scrollea con la pista**. Para
@@ -204,28 +204,43 @@ horizontal, no vertical.
 
 **Solución en dos partes**:
 
-1. **Durante la carrera: ventana móvil de sprites.** Sobre el margen izquierdo,
-   los puestos cercanos al tuyo: dos arriba, el tuyo, dos abajo. Cinco líneas
-   de `P08 COL` a cuatro o cinco sprites por línea. Cada línea cae en scanlines
-   distintas, así que no rompe el límite de ocho sprites por línea, y el total
-   deja lugar para los autos.
+1. **Durante la carrera: ventana móvil de sprites** (`BuildRankWindow`). Sobre
+   el margen izquierdo, los puestos cercanos al tuyo: dos arriba, el tuyo, dos
+   abajo. Cinco líneas de `P08COL`, **6 sprites por línea** (sin espacio
+   separador, para ahorrar uno; el espaciado sale de la posición X) — la línea
+   del jugador lleva un `!` adelante en vez de un color distinto (las 4
+   paletas de sprite ya están asignadas: jugador, rival rojo, rival plateado,
+   texto), así que son 7 en esa. Cerca de los extremos (líder, último) la
+   ventana se desliza en vez de mostrar puestos inválidos.
 
    ```
-   P06 SAI
-   P07 GAS
-   P08 COL   <- vos, resaltado
-   P09 OCO
-   P10 HUL
+   P06SAI
+   P07GAS
+   !P08COL   <- vos, resaltado
+   P09OCO
+   P10HUL
    ```
 
-   Es además la información que de verdad te sirve manejando: contra quién
-   estás peleando.
+   El presupuesto de sprites por línea de barrido sigue siendo real: un auto
+   de tráfico decorativo puede caer en la misma scanline que una línea de la
+   ventana y hacer parpadear algún sprite ese cuadro. Se acepta como
+   limitación de hardware documentada (igual que las curvas escalonadas de la
+   fase 1): el orden en que se arman los sprites (jugador, HUD, ventana,
+   autos al final) asegura que lo primero que se pierde en un desborde es
+   siempre tráfico decorativo, nunca información real.
 
-2. **Tabla completa de 22 en pantalla propia.** Con SELECT se pausa y se dibuja
-   la clasificación entera, con puesto, código, equipo y diferencia. Con el
-   juego pausado se puede apagar el rendering y escribir la pantalla completa
-   sin límites. Misma pantalla se usa para la parrilla después de la qualy y
-   para el resultado final.
+2. **Tabla completa de 22 en pantalla propia** (`EnterClass`, toggle con
+   SELECT). Con el juego pausado se apaga el rendering y se escribe la
+   pantalla completa sin límites: puesto, código, equipo y diferencia
+   respecto al líder (como fracción de vuelta, `+D.D`). Como esta pantalla
+   reusa las mismas dos nametables que el circuito curvo de la fase 1, hay
+   que guardar el scroll, forzarlo a 0 para dibujar limpio, y reconstruir el
+   trazado real (`RedrawTrack`, lee `rowCC` en vez de regenerar el trazado)
+   antes de restaurarlo al salir — si no, el circuito queda roto o
+   desalineado. La paleta de fondo es una sola para todo el texto (solo hay 4
+   disponibles en total, no alcanzan para 11 colores de equipo distintos).
+   Misma pantalla se va a reusar para la parrilla después de la qualy y para
+   el resultado final.
 
 ## 9. HUD en carrera
 
@@ -278,10 +293,23 @@ que las paletas de fondo sean por bloques de 16 × 16 px. El detalle está en
 Los rivales pasaron a vivir en coordenadas de pista, así que siguen la curva
 solos. **El ERS ya tiene dónde cargarse.**
 
-**Fase 2 — Los 22 pilotos.** Tablas de datos, simulación de los que no están en
-pantalla, cálculo de posiciones, ventana móvil de sprites y pantalla de
-clasificación completa. Sin gomas ni boxes todavía: solo que la carrera tenga
-22 autos y un orden coherente.
+**Fase 2 — Los 22 pilotos. HECHA.** Tabla de 22 pilotos y 11 equipos en
+`BANK3` (primer uso real del banking de MMC1 para algo que no fuera una
+prueba), copiada a RAM una sola vez al arrancar la carrera. Cada IA tiene un
+ritmo de punto fijo derivado de `ritmo_equipo + habilidad`, con un spread
+calibrado para dar gaps del orden de una F1 real (una fracción de vuelta a lo
+largo de la carrera), no vueltas enteras — Alpine queda por debajo de la
+mediana, como pide la regla de diseño. La posición se recalcula todos los
+cuadros comparando la distancia total de los 22 (el jugador incluido);
+sección 8 tiene el detalle de la ventana móvil y la clasificación completa.
+
+Sin qualy todavía (fase 3), los 22 arrancan en distancia 0 (largada en
+punta): el orden real sale de que los pilotos con mejor ritmo se despegan
+durante la carrera, no de un grid. Los 4 autos de tráfico que se ven en
+pantalla siguen siendo decorativos (sistema de la fase 1, sin cambios): la
+simulación de posiciones es independiente de qué autos se dibujan en cada
+momento — el jugador gana o pierde puestos por su distancia real, no por
+esquivar tráfico.
 
 **Fase 3 — Qualy y parrilla.** Estado nuevo, salida de boxes, cronómetro,
 generación de tiempos de la IA, pantalla de parrilla, y la carrera largando

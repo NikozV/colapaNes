@@ -27,6 +27,7 @@ OAMDMA    = $4014
 ST_TITLE  = 0
 ST_RACE   = 1
 ST_END    = 2
+ST_CLASS  = 3
 
 PLAYER_Y  = 168
 ROAD_L    = 48          ; borde izquierdo del asfalto (px)
@@ -37,6 +38,13 @@ TOTAL_LAPS = 3
 TRACK_CC  = 16          ; columna del centro del asfalto en la recta
 CC_MIN    = 12          ; el circuito no puede correrse mas alla de estos
 CC_MAX    = 20          ; limites sin salirse de las 32 columnas
+
+NUM_AI      = 21
+NUM_DRIVERS = 22
+PLAYER_SLOT = 19        ; indice 0-based de COL en la tabla de 22 pilotos
+AIPACE_HI   = 2         ; parte entera del pace de los IA (paceLo da la fraccion)
+RANK_X      = 0         ; ventana de posiciones: margen izquierdo, fuera del asfalto
+RANK_Y      = 32        ; debajo del HUD (filas 1 y 2 en Y=8/16)
 
 T_GRASS_A = $01
 T_GRASS_B = $02
@@ -74,6 +82,8 @@ tmp1:       .res 1
 tmp2:       .res 1
 tmp3:       .res 1
 tmp4:       .res 1
+tmp5:       .res 1
+tmp6:       .res 1
 dLo:        .res 1
 dHi:        .res 1
 secTick:    .res 1
@@ -102,10 +112,29 @@ attrAddrHi: .res 1
 trkSeg:     .res 1          ; segmento del circuito en curso
 trkLeft:    .res 1          ; bloques que le quedan a ese segmento
 
+; --- los 22 pilotos (ver "LOS 22 PILOTOS" mas abajo) ---
+plyTotalLo: .res 1          ; distancia total del jugador, nunca se resetea
+plyTotalHi: .res 1
+playerPos:  .res 1          ; puesto 1-22 del jugador, recalculado cada cuadro
+
+; scratch de BuildRankWindow (ver "SPRITES" mas abajo). Con nombre propio y
+; no tmp1-4 porque la rutina llama a PutChar/ToDigits en el medio, que SI
+; pisan tmp1-4: esto tiene que sobrevivir a esas llamadas.
+rankStart:  .res 1          ; puesto (0-based) de la primera linea
+rankLine:   .res 1          ; linea actual (0..4) mientras se arma la ventana
+rankDrv:    .res 1          ; indice de piloto de la linea actual
+rankX:      .res 1          ; X de pantalla del proximo caracter de esta linea
+rankScrY:   .res 1          ; Y de pantalla de esta linea
+
+; pantalla de clasificacion (SELECT)
+savedScrollLo: .res 1       ; scroll de la carrera, guardado mientras se ve
+savedScrollNT: .res 1
+
 ; Exportadas para que tools/probe.py pueda leerlas por nombre desde el emulador
 .exportzp gameState, playerX, spdLo, spdHi, distLo, distHi
 .exportzp lapNum, crashT, offRoad, scrollLo, secs, mins, finished
 .exportzp prgBank, bankVal, topRow, genCC
+.exportzp plyTotalLo, plyTotalHi, playerPos, oamIdx, scrollNT
 
 .segment "OAM"
 oam:        .res 256
@@ -125,6 +154,40 @@ rowCC:      .res 60         ; centro del asfalto de cada fila virtual
 ; rowCC no es zeropage, asi que va con .export y no con .exportzp. Lo lee
 ; tools/probe.py para verificar que el circuito curva de verdad.
 .export rowCC
+
+; distancia total de cada uno de los 22 (incluye al jugador, sincronizado en
+; PLAYER_SLOT por SyncPlayerSlot) y el orden real por distancia
+totalLo:    .res NUM_DRIVERS
+totalHi:    .res NUM_DRIVERS
+paceFrac:   .res NUM_DRIVERS   ; acumulador fraccionario del pace de la IA
+orderTable: .res NUM_DRIVERS   ; orderTable[i] = piloto en el puesto i (0-based)
+rankOf:     .res NUM_DRIVERS   ; inverso: rankOf[piloto] = puesto (0-based)
+
+.export totalLo, totalHi, orderTable, rankOf
+
+; Tabla de los 22 pilotos, copiada una sola vez desde BANK3 al arrancar la
+; carrera (ver CopyPilotTable). Todo en Struct-of-Arrays: el 6502 no
+; multiplica, asi que indexar por piloto tiene que ser directo (tabla,x),
+; sin calcular N*ancho_de_registro.
+;
+; Va en BSS (RAM normal) y no en XRAM (PRG-RAM, $6000-$7FFF) a proposito:
+; nes-py, el emulador que usan los tests, solo expone las 2KB de RAM interna
+; de la consola (ver tools/nes_harness.py y RAM_SIZE=$800 del lado de
+; nes-py) -- la PRG-RAM del cartucho le es invisible al harness, asi que
+; nada que viva ahi se puede verificar con 'make test'. BANK3 se sigue
+; usando de verdad (la copia sale de un banco conmutable), solo que el
+; destino es RAM normal en vez de PRG-RAM.
+pilotCode0: .res NUM_DRIVERS   ; letras del codigo (COL vive en PLAYER_SLOT)
+pilotCode1: .res NUM_DRIVERS
+pilotCode2: .res NUM_DRIVERS
+pilotTeam:  .res NUM_DRIVERS   ; team_id 0..10
+teamPaceLo: .res NUM_DRIVERS   ; parte fraccionaria del pace (0 en PLAYER_SLOT)
+
+teamName0:  .res 11            ; abreviatura de equipo, 3 letras
+teamName1:  .res 11
+teamName2:  .res 11
+
+.export pilotCode0, pilotCode1, pilotCode2, pilotTeam, teamPaceLo
 
 ;=============================================================================
 ; MMC1
@@ -201,6 +264,43 @@ ReadBank0:
     lda bank0Tab,y
     rts
 
+; Copia la tabla de 22 pilotos y 11 equipos de BANK3 a XRAM. Se llama UNA vez,
+; al arrancar la carrera (ver StartRace). Despues de esto el juego no vuelve a
+; tocar el mapper hasta la proxima carrera: BANK3 nunca tiene codigo, solo
+; datos, asi que no hay riesgo de ejecutar con el banco equivocado mapeado.
+CopyPilotTable:
+    lda #3
+    jsr SwitchBank
+    ldx #0
+@drivers:
+    lda pilotCode0Tab,x
+    sta pilotCode0,x
+    lda pilotCode1Tab,x
+    sta pilotCode1,x
+    lda pilotCode2Tab,x
+    sta pilotCode2,x
+    lda pilotTeamTab,x
+    sta pilotTeam,x
+    lda teamPaceLoTab,x
+    sta teamPaceLo,x
+    inx
+    cpx #NUM_DRIVERS
+    bne @drivers
+    ldx #0
+@teams:
+    lda teamName0Tab,x
+    sta teamName0,x
+    lda teamName1Tab,x
+    sta teamName1,x
+    lda teamName2Tab,x
+    sta teamName2,x
+    inx
+    cpx #11
+    bne @teams
+    lda #0
+    jsr SwitchBank
+    rts
+
 ;=============================================================================
 ; Tabla de prueba, en el banco conmutable. Desde $C000 este dato no se ve si
 ; BANK0 no esta mapeado: es justamente lo que verifica el test.
@@ -209,6 +309,77 @@ ReadBank0:
 
 bank0Tab:
     .byte "COL", 43         ; codigo del piloto y su numero
+
+;=============================================================================
+; Tabla de 22 pilotos y 11 equipos (temporada 2026, docs/reglas-juego.md
+; seccion 2). Vive en un banco conmutable porque son puros datos de solo
+; lectura: CopyPilotTable la copia entera a XRAM una sola vez, al arrancar la
+; carrera, y despues de eso el juego no vuelve a tocar el mapper.
+;
+; Struct-of-Arrays: cada campo es su propio array indexado 0..21 por piloto,
+; en el mismo orden que la tabla de las reglas. El 6502 no multiplica, asi
+; que indexar por piloto tiene que ser directo (tabla,x), sin calcular
+; N*ancho_de_registro como haria un array de estructuras.
+;
+; PLAYER_SLOT (19) es Colapinto/Alpine. No tiene pace propio (lo maneja el
+; humano): el valor de tabla en ese indice es 0 y no se usa (UpdateAI y
+; ApplyLapVariation lo saltean a proposito).
+;
+; El orden de la tabla es el literal de las reglas, no un orden de largada:
+; sin qualy todavia (fase 3) todos arrancan en distancia 0 y el orden real
+; sale de que los pilotos con mejor ritmo se despegan durante la carrera.
+;=============================================================================
+.segment "BANK3"
+
+;                          1    2    3    4    5    6    7    8    9   10
+;                        NOR  PIA  LEC  HAM  VER  HAD  RUS  ANT  ALB  SAI
+;                         11   12   13   14   15   16   17   18   19   20
+;                        ALO  STR  LAW  LIN  HUL  BOR  OCO  BEA  GAS  COL
+;                         21   22
+;                        PER  BOT
+pilotCode0Tab: .byte "NPLHVHRAASASLLHBOBGCPB"
+pilotCode1Tab: .byte "OIEAEAUNLALTAIUOCEAOEO"
+pilotCode2Tab: .byte "RACMRDSTBIORWNLROASLRT"
+
+; 0 McLaren  1 Ferrari  2 RedBull  3 Mercedes  4 Williams  5 AstonMartin
+; 6 RacingBulls  7 Audi  8 Haas  9 Alpine  10 Cadillac
+pilotTeamTab:
+    .byte 0,0,1,1,2,2,3,3,4,4,5,5,6,6,7,7,8,8,9,9,10,10
+
+; paceLo = 96 + (ritmo_equipo + habilidad - 159) * 2 -- ver el diseno en
+; docs/reglas-juego.md. Constante de ensamblado: la resuelve ca65, no el
+; 6502. Rango real con esta tabla: 96 (LIN) a 160 (VER) -> pace promedio
+; 2.375 a 2.625 unidades/cuadro (AIPACE_HI=2 mas esta fraccion), spread del
+; orden de una F1 real. GAS (Alpine) da 112, por debajo de la mediana de los
+; 21 -> "medio de parrilla", como pide la regla de diseno.
+teamPaceLoTab:
+    .byte 96+(95+95-159)*2   ; NOR
+    .byte 96+(95+94-159)*2   ; PIA
+    .byte 96+(92+95-159)*2   ; LEC
+    .byte 96+(92+93-159)*2   ; HAM
+    .byte 96+(92+99-159)*2   ; VER
+    .byte 96+(92+85-159)*2   ; HAD
+    .byte 96+(90+93-159)*2   ; RUS
+    .byte 96+(90+87-159)*2   ; ANT
+    .byte 96+(85+88-159)*2   ; ALB
+    .byte 96+(85+90-159)*2   ; SAI
+    .byte 96+(84+92-159)*2   ; ALO
+    .byte 96+(84+78-159)*2   ; STR
+    .byte 96+(83+82-159)*2   ; LAW
+    .byte 96+(83+76-159)*2   ; LIN
+    .byte 96+(82+87-159)*2   ; HUL
+    .byte 96+(82+82-159)*2   ; BOR
+    .byte 96+(82+85-159)*2   ; OCO
+    .byte 96+(82+84-159)*2   ; BEA
+    .byte 96+(80+87-159)*2   ; GAS
+    .byte 0                  ; COL - jugador, no se usa
+    .byte 96+(76+86-159)*2   ; PER
+    .byte 96+(76+85-159)*2   ; BOT
+
+; MCL FER RBR MER WIL AST RCB AUD HAA ALP CAD
+teamName0Tab: .byte "MFRMWARAHAC"
+teamName1Tab: .byte "CEBEISCUALA"
+teamName2Tab: .byte "LRRRLTBDAPD"
 
 ;=============================================================================
 .segment "CODE"
@@ -276,6 +447,10 @@ main:
 :   cmp #ST_RACE
     bne :+
     jsr RaceLogic
+    jmp main
+:   cmp #ST_CLASS
+    bne :+
+    jsr ClassLogic
     jmp main
 :   jsr EndLogic
     jmp main
@@ -608,6 +783,7 @@ TitleLogic:
 ;=============================================================================
 StartRace:
     jsr RenderOff
+    jsr CopyPilotTable      ; tabla de 22 pilotos: BANK3 -> XRAM, una sola vez
     lda #0                  ; el circuito arranca en la fila virtual 0
     sta scrollLo
     sta scrollNT
@@ -654,6 +830,26 @@ StartRace:
     cpx #4
     bne @rv
 
+    ; --- los 22 pilotos: todos arrancan en distancia 0 (sin qualy todavia,
+    ; el orden real sale de correr, no de un grid) ---
+    lda #0
+    sta plyTotalLo
+    sta plyTotalHi
+    ldx #0
+@pl:
+    lda #0
+    sta totalLo,x
+    sta totalHi,x
+    sta paceFrac,x
+    txa
+    sta orderTable,x        ; orden identidad: orderTable[i] = i
+    sta rankOf,x
+    inx
+    cpx #NUM_DRIVERS
+    bne @pl
+    lda #PLAYER_SLOT+1      ; puesto nominal hasta el primer UpdatePositions
+    sta playerPos
+
     lda #ST_RACE
     sta gameState
     jsr RenderOn
@@ -698,10 +894,50 @@ DrawTrack:
     bne @lp
     rts
 
+; Como DrawTrack, pero para reconstruir el circuito curvo REAL en vez de
+; dibujar el trazado recto inicial: en vez de generar el centro con
+; AdvanceTrack/segLen/segDelta, lo lee directo de rowCC (que sigue teniendo
+; el estado correcto en RAM, sin tocar). La usa ExitClass al salir de la
+; clasificacion, porque esa pantalla reescribe las mismas dos nametables
+; que usa el circuito.
+RedrawTrack:
+    lda #0
+    sta genRow
+@lp:
+    ldx genRow
+    lda rowCC,x
+    sta genCC
+
+    lda genRow
+    cmp #30
+    bcc :+
+    sec
+    sbc #30
+:   and #3
+    bne @row
+    jsr BuildAttr
+    jsr SetAttrAddr
+    jsr WriteAttrNow
+@row:
+    jsr BuildRow
+    jsr SetRowAddr
+    jsr WriteRowNow
+    inc genRow
+    lda genRow
+    cmp #60
+    bne @lp
+    rts
+
 ;=============================================================================
 ; LOGICA DE CARRERA
 ;=============================================================================
 RaceLogic:
+    lda padNew
+    and #BTN_SEL
+    beq @norm
+    jsr EnterClass           ; SELECT: pausa y muestra la clasificacion
+    rts
+@norm:
     jsr UpdateTimer
     jsr UpdatePlayer
     jsr UpdateScroll
@@ -709,6 +945,9 @@ RaceLogic:
     jsr UpdateRivals
     jsr CheckCollisions
     jsr UpdateDistance
+    jsr SyncPlayerSlot
+    jsr UpdateAI
+    jsr UpdatePositions
     jsr EngineSound
     jsr BuildOAM
     rts
@@ -1418,6 +1657,16 @@ UpdateDistance:
     lda distHi
     adc #0
     sta distHi
+    ; distancia total del jugador: mismo incremento que distLo/Hi arriba,
+    ; pero esta nunca se resetea. La usa SyncPlayerSlot para compararlo
+    ; contra los 21 IA sin tener que multiplicar lapNum*LAP_LEN cada vez.
+    lda plyTotalLo
+    clc
+    adc spdHi
+    sta plyTotalLo
+    lda plyTotalHi
+    adc #0
+    sta plyTotalHi
     ; vuelta completa?
     lda distHi
     cmp #>LAP_LEN
@@ -1435,6 +1684,7 @@ UpdateDistance:
     sbc #>LAP_LEN
     sta distHi
     inc lapNum
+    jsr ApplyLapVariation
     jsr Blip
     lda lapNum
     cmp #TOTAL_LAPS+1
@@ -1443,6 +1693,471 @@ UpdateDistance:
     sta finished
     jsr GoEnd
 @rts:
+    rts
+
+;=============================================================================
+; LOS 22 PILOTOS
+;
+; Los 4 autos de trafico que se ven en pantalla (SpawnRival/UpdateRivals) son
+; decorativos y no cambian en esta fase. En paralelo, sin relacion con lo que
+; se dibuja, se simulan los 22 pilotos reales (el jugador + 21 IA) solo para
+; llevar la cuenta de posiciones: cuanta distancia total lleva cada uno y en
+; que orden van.
+;=============================================================================
+
+; El jugador tiene su propio acumulador (plyTotalLo/Hi, se llena en
+; UpdateDistance); esto lo copia al lugar que le corresponde en la tabla de
+; 22, para que UpdatePositions compare a todos con el mismo criterio.
+SyncPlayerSlot:
+    lda plyTotalLo
+    sta totalLo+PLAYER_SLOT
+    lda plyTotalHi
+    sta totalHi+PLAYER_SLOT
+    rts
+
+; Avanza la distancia total de los 21 IA. AIPACE_HI es igual para todos; la
+; parte fraccionaria (teamPaceLo) es lo que distingue el ritmo de cada uno,
+; igual que rivalSLo/SHi ya distingue la velocidad de los rivales decorativos.
+;
+; totalLo/Hi tiene que quedar en las MISMAS unidades que plyTotalLo/Hi (un
+; contador entero plano, sin fraccion: UpdateDistance solo suma spdHi, nunca
+; spdLo). Por eso el pace de punto fijo (teamPaceLo/AIPACE_HI) no se suma
+; directo a totalLo/Hi -- eso los dejaria en escalas distintas, con el total
+; de la IA miles de unidades mas alto que el del jugador tras unos pocos
+; cuadros. paceFrac es el acumulador fraccionario aparte: solo su ACARREO
+; (0 o 1 vez cada varios cuadros) entra a totalLo/Hi, igual que scrollFrac
+; hace con scrollLo.
+UpdateAI:
+    ldx #0
+@lp:
+    cpx #PLAYER_SLOT
+    beq @next                ; el jugador se sincroniza aparte, no aca
+    lda paceFrac,x
+    clc
+    adc teamPaceLo,x
+    sta paceFrac,x           ; el acarreo de esta suma es lo que se usa abajo
+    lda totalLo,x
+    adc #AIPACE_HI            ; suma AIPACE_HI + el acarreo de paceFrac
+    sta totalLo,x
+    lda totalHi,x
+    adc #0
+    sta totalHi,x
+@next:
+    inx
+    cpx #NUM_DRIVERS
+    bne @lp
+    rts
+
+; Se dispara cuando el JUGADOR completa una vuelta (no el de cada IA por
+; separado: simplificacion valida para "orden coherente", que es lo que pide
+; esta fase, no precision de simulacion). Variacion chica y clampeada a
+; 64..192 para que no haga un random walk sin limite en carreras largas.
+ApplyLapVariation:
+    ldx #0
+@lp:
+    cpx #PLAYER_SLOT
+    beq @next
+    jsr Rand
+    and #7                    ; 0..7
+    sec
+    sbc #3                    ; -3..+4, tratado como delta con signo
+    clc
+    adc teamPaceLo,x
+    cmp #64
+    bcs :+
+    lda #64
+:   cmp #193
+    bcc :+
+    lda #192
+:   sta teamPaceLo,x
+@next:
+    inx
+    cpx #NUM_DRIVERS
+    bne @lp
+    rts
+
+; Orden real de los 22 por distancia descendente. Los deltas de pace son
+; chicos, asi que orderTable esta siempre CASI ordenada: un pase de burbuja
+; (21 comparaciones adyacentes) la deja bien casi siempre, pero cuando dos o
+; mas pilotos estan muy cerca uno del otro un pase solo puede tardar varios
+; cuadros en asentarse del todo. El presupuesto de ciclos sobra de sobra (esto
+; es una fraccion de lo que hay libre en el bucle principal), asi que en vez
+; de aflojar la precision se hacen UPD_PASSES pases seguidos: barato, y deja
+; la ventana de posiciones fiel de verdad, no solo "eventualmente correcta".
+UPD_PASSES = 3
+
+UpdatePositions:
+    ldy #UPD_PASSES
+@pass:
+    sty tmp4                 ; tmp4 = pases que quedan
+    ldx #0
+@lp:
+    ldy orderTable,x
+    lda totalHi,y
+    sta tmp1
+    lda totalLo,y
+    sta tmp2
+    ldy orderTable+1,x
+    lda tmp1
+    cmp totalHi,y
+    bne @cmpdone
+    lda tmp2
+    cmp totalLo,y
+@cmpdone:
+    bcs @noswap               ; total(orderTable[x]) >= total(orderTable[x+1])
+    lda orderTable,x          ; van al reves de como tienen que quedar: swap
+    tay
+    lda orderTable+1,x
+    sta orderTable,x
+    tya
+    sta orderTable+1,x
+@noswap:
+    inx
+    cpx #NUM_DRIVERS-1
+    bne @lp
+    ldy tmp4
+    dey
+    bne @pass
+
+    ; reconstruir rankOf desde orderTable. Mas simple y menos propenso a
+    ; bugs que mantenerlo incremental durante los swaps de arriba.
+    ldx #0
+@rk:
+    ldy orderTable,x
+    txa
+    sta rankOf,y
+    inx
+    cpx #NUM_DRIVERS
+    bne @rk
+
+    lda rankOf+PLAYER_SLOT
+    clc
+    adc #1
+    sta playerPos
+    rts
+
+; Insertion sort completo de los 22, por si el pase incremental de
+; UpdatePositions quedo momentaneamente desalineado (streaks cortos, ver
+; probe.py). Se llama una sola vez, al entrar a la clasificacion: ahi hace
+; falta la foto exacta, no la aproximacion barata de cada cuadro.
+SortAllDrivers:
+    ldx #1
+@outer:
+    lda orderTable,x
+    sta tmp5                  ; piloto a insertar
+    ldy tmp5
+    lda totalHi,y
+    sta tmp1
+    lda totalLo,y
+    sta tmp2
+    stx tmp6                  ; tmp6 = j, la posicion donde se esta insertando
+@inner:
+    lda tmp6
+    beq @insert
+    tay
+    dey
+    lda orderTable,y          ; orderTable[j-1]
+    tay
+    lda totalHi,y
+    cmp tmp1
+    bne @cmpd
+    lda totalLo,y
+    cmp tmp2
+@cmpd:
+    bcs @insert                ; total(orderTable[j-1]) >= a insertar: ya esta bien
+    lda tmp6
+    tay
+    dey
+    lda orderTable,y
+    ldy tmp6
+    sta orderTable,y           ; orderTable[j] = orderTable[j-1]
+    dec tmp6
+    jmp @inner
+@insert:
+    ldy tmp6
+    lda tmp5
+    sta orderTable,y
+
+    inx
+    cpx #NUM_DRIVERS
+    beq @done
+    jmp @outer
+@done:
+    ldx #0
+@rk:
+    ldy orderTable,x
+    txa
+    sta rankOf,y
+    inx
+    cpx #NUM_DRIVERS
+    bne @rk
+    lda rankOf+PLAYER_SLOT
+    clc
+    adc #1
+    sta playerPos
+    rts
+
+;=============================================================================
+; PANTALLA DE CLASIFICACION (SELECT)
+;
+; Toggle con SELECT, igual que START ya alterna entre pantallas en este
+; juego. Mientras esta activa la carrera queda congelada: no se llama a
+; UpdateTrack/UpdatePlayer/UpdateRivals/UpdateTimer desde ClassLogic, asi
+; que se retoma exactamente donde estaba al salir.
+;
+; El circuito curvo (Fase 1) vive en las mismas dos nametables que esta
+; pantalla usa para el texto, y el scroll casi nunca esta en 0 a mitad de
+; carrera -- por eso se guarda scrollLo/scrollNT y se fuerzan a 0 antes de
+; dibujar (como arranca DrawTrack), y RedrawTrack reconstruye el circuito
+; real (leyendo rowCC, no reiniciando el trazado) antes de restaurarlos.
+;=============================================================================
+classtxt: .byte "CLASIFICACION", 0
+
+EnterClass:
+    lda scrollLo
+    sta savedScrollLo
+    lda scrollNT
+    sta savedScrollNT
+    lda #0
+    sta scrollLo
+    sta scrollNT
+
+    jsr RenderOff
+    jsr SortAllDrivers
+
+    lda #<$2000
+    sta ptr
+    lda #>$2000
+    sta ptr+1
+    lda #$20                 ; espacio
+    jsr FillNT
+
+    bit PPUSTATUS
+    lda #$23
+    sta PPUADDR
+    lda #$C0
+    sta PPUADDR
+    ldx #64
+    lda #$FF                 ; paleta 3 (texto azul) para toda la pantalla
+:   sta PPUDATA
+    dex
+    bne :-
+
+    lda #<classtxt
+    sta ptr
+    lda #>classtxt
+    sta ptr+1
+    lda #$29
+    sta tmp3
+    lda #$20
+    sta tmp4
+    jsr DrawText
+
+    lda #0
+    sta rankLine              ; reusa rankLine como indice de fila (0..21)
+@row:
+    ldx rankLine
+    lda orderTable,x
+    sta rankDrv
+
+    lda rankLine
+    clc
+    adc #4                    ; deja 4 filas de margen arriba
+    jsr SetClassAddr
+
+    bit PPUSTATUS
+    lda tmp4
+    sta PPUADDR
+    lda tmp3
+    sta PPUADDR
+
+    lda #' '
+    sta PPUDATA
+    sta PPUDATA
+    lda #'P'
+    sta PPUDATA
+    lda rankLine
+    clc
+    adc #1
+    sta numLo
+    lda #0
+    sta numHi
+    jsr ToDigits
+    lda dig1
+    clc
+    adc #'0'
+    sta PPUDATA
+    lda dig0
+    clc
+    adc #'0'
+    sta PPUDATA
+    lda #' '
+    sta PPUDATA
+    ldx rankDrv
+    lda pilotCode0,x
+    sta PPUDATA
+    lda pilotCode1,x
+    sta PPUDATA
+    lda pilotCode2,x
+    sta PPUDATA
+    lda #' '
+    sta PPUDATA
+    ldx rankDrv
+    lda pilotTeam,x
+    tax
+    lda teamName0,x
+    sta PPUDATA
+    lda teamName1,x
+    sta PPUDATA
+    lda teamName2,x
+    sta PPUDATA
+    lda #' '
+    sta PPUDATA
+
+    jsr ClassGap               ; deja dig1 (entero) / dig0 (decimo)
+    lda #'+'
+    sta PPUDATA
+    lda dig1
+    clc
+    adc #'0'
+    sta PPUDATA
+    lda #'.'
+    sta PPUDATA
+    lda dig0
+    clc
+    adc #'0'
+    sta PPUDATA
+
+    inc rankLine
+    lda rankLine
+    cmp #NUM_DRIVERS
+    beq @rowsdone
+    jmp @row
+@rowsdone:
+
+    ; ocultar sprites: sin esto quedarian los autos/HUD de la ultima
+    ; carrera dibujados encima. BuildOAM no corre mientras esta congelado,
+    ; asi que con hacerlo una vez alcanza.
+    ldx #0
+    lda #$FF
+:   sta oam,x
+    inx
+    bne :-
+
+    lda #ST_CLASS
+    sta gameState
+    jsr RenderOn
+    rts
+
+ExitClass:
+    jsr RenderOff
+    jsr RedrawTrack
+    lda savedScrollLo
+    sta scrollLo
+    lda savedScrollNT
+    sta scrollNT
+    lda #ST_RACE
+    sta gameState
+    jsr RenderOn
+    rts
+
+ClassLogic:
+    lda padNew
+    and #BTN_SEL
+    beq :+
+    jsr ExitClass
+:   rts
+
+; A = fila de tiles (0..29) -> tmp3/tmp4 = direccion PPU. Siempre en la
+; nametable de arriba: esta pantalla no scrollea.
+SetClassAddr:
+    sta tmp1
+    lsr a
+    lsr a
+    lsr a
+    clc
+    adc #$20
+    sta tmp4
+    lda tmp1
+    and #7
+    asl a
+    asl a
+    asl a
+    asl a
+    asl a
+    sta tmp3
+    rts
+
+; Diferencia respecto al lider, como fraccion de vuelta: delta*10/LAP_LEN,
+; un decimal. Con la calibracion de pace de esta fase los gaps reales quedan
+; bien por debajo de una vuelta entera, asi que la parte entera practicamente
+; siempre da 0 -- salvo que alguien se quede muy atras, en cuyo caso se
+; clampea a "+9.9" en vez de mostrar una fraccion sin sentido.
+; rankDrv = piloto de esta fila. Deja dig1 (entero) / dig0 (decimo).
+ClassGap:
+    ldy orderTable             ; orderTable[0] = el lider
+    lda totalLo,y
+    sta tmp1
+    lda totalHi,y
+    sta tmp2
+    ldy rankDrv
+    lda tmp1
+    sec
+    sbc totalLo,y
+    sta tmp1                   ; delta lo
+    lda tmp2
+    sbc totalHi,y
+    sta tmp2                   ; delta hi
+
+    lda tmp2
+    cmp #>LAP_LEN
+    bne @cmphi
+    lda tmp1
+    cmp #<LAP_LEN
+@cmphi:
+    bcc @small
+    lda #9
+    sta dig1
+    sta dig0
+    rts
+@small:
+    lda #0
+    sta numLo
+    sta numHi
+    ldx #10
+@mul10:
+    lda numLo
+    clc
+    adc tmp1
+    sta numLo
+    lda numHi
+    adc tmp2
+    sta numHi
+    dex
+    bne @mul10
+
+    ldx #0
+@div:
+    lda numHi
+    cmp #>LAP_LEN
+    bne @divcmp
+    lda numLo
+    cmp #<LAP_LEN
+@divcmp:
+    bcc @divdone
+    lda numLo
+    sec
+    sbc #<LAP_LEN
+    sta numLo
+    lda numHi
+    sbc #>LAP_LEN
+    sta numHi
+    inx
+    jmp @div
+@divdone:
+    stx dig0
+    lda #0
+    sta dig1
     rts
 
 ;=============================================================================
@@ -1541,12 +2256,86 @@ EndLogic:
 
 ;=============================================================================
 ; SPRITES
+;
+; Orden de prioridad: en el NES, si una linea de barrido junta mas de 8
+; sprites, el hardware muestra los PRIMEROS 8 del buffer OAM y descarta el
+; resto -- no hay eleccion de "cual importa mas", solo el orden en que se
+; escribieron. Por eso el orden aca no es arbitrario: jugador primero (nunca
+; se puede perder), despues el HUD, despues la ventana de posiciones, y los
+; autos de trafico decorativo al final -- son lo primero que se sacrifica si
+; una linea se llena (puede pasar: la ventana vive en el margen izquierdo y
+; un auto puede caer en la misma scanline. Es la misma clase de limitacion
+; de hardware que las curvas escalonadas de la Fase 1, documentada y no un
+; bug).
 ;=============================================================================
 BuildOAM:
     lda #0
     sta oamIdx
 
-    ; --- HUD (arriba): V n / 3      y    velocidad
+    ; --- jugador (parpadea si choco)
+    lda crashT
+    beq @drawp
+    lda frameCnt
+    and #2
+    bne @hidep
+@drawp:
+    lda playerX
+    sta tmp1
+    lda #PLAYER_Y
+    sta tmp2
+    lda #0
+    sta tmp3
+    jsr PutCar
+@hidep:
+
+    jsr BuildHud1
+    jsr BuildHudRow2
+    jsr BuildRankWindow
+
+    ; --- rivales (trafico decorativo, al final: son lo primero que se
+    ; sacrifica en un overflow de scanline)
+    ldx #0
+@rv:
+    lda rivalYHi,x
+    cmp #240
+    bcs @rvnext
+    cmp #8
+    bcc @rvnext
+    txa
+    pha
+    ; sacar todo del rival ANTES de llamar a ShiftAtY, que pisa A y X
+    lda rivalX,x
+    sta tmp1                ; X en coordenadas de pista
+    lda rivalYHi,x
+    sta tmp2
+    lda rivalPal,x
+    clc
+    adc #1                  ; paletas 1 o 2
+    sta tmp3
+    lda tmp2
+    jsr ShiftAtY            ; los rivales tambien siguen la curva
+    clc
+    adc tmp1
+    sta tmp1                ; -> coordenadas de pantalla
+    jsr PutCar
+    pla
+    tax
+@rvnext:
+    inx
+    cpx #4
+    bne @rv
+
+    ; apagar el resto de los sprites
+    ldx oamIdx
+    lda #$FF
+@clr:
+    sta oam,x
+    inx
+    bne @clr
+    rts
+
+; --- HUD fila 1 (Y=8): V n / 3      y    velocidad
+BuildHud1:
     lda #'V'
     ldx #16
     ldy #8
@@ -1612,62 +2401,152 @@ BuildOAM:
     ldx #208
     ldy #8
     jsr PutChar
+    rts
 
-    ; --- rivales
-    ldx #0
-@rv:
-    lda rivalYHi,x
-    cmp #240
-    bcs @rvnext
-    cmp #8
-    bcc @rvnext
-    txa
-    pha
-    ; sacar todo del rival ANTES de llamar a ShiftAtY, que pisa A y X
-    lda rivalX,x
-    sta tmp1                ; X en coordenadas de pista
-    lda rivalYHi,x
-    sta tmp2
-    lda rivalPal,x
-    clc
-    adc #1                  ; paletas 1 o 2
-    sta tmp3
-    lda tmp2
-    jsr ShiftAtY            ; los rivales tambien siguen la curva
-    clc
-    adc tmp1
-    sta tmp1                ; -> coordenadas de pantalla
-    jsr PutCar
-    pla
-    tax
-@rvnext:
-    inx
-    cpx #4
-    bne @rv
-
-    ; --- jugador (parpadea si choco)
-    lda crashT
-    beq @drawp
-    lda frameCnt
-    and #2
-    bne @hidep
-@drawp:
-    lda playerX
-    sta tmp1
-    lda #PLAYER_Y
-    sta tmp2
+; --- HUD fila 2 (Y=16): posicion, "P08". Fila propia y no la de arriba
+; porque esa ya usa 7 de los 8 sprites que entran por scanline.
+BuildHudRow2:
+    lda #'P'
+    ldx #16
+    ldy #16
+    jsr PutChar
+    lda playerPos
+    sta numLo
     lda #0
-    sta tmp3
-    jsr PutCar
-@hidep:
+    sta numHi
+    jsr ToDigits
+    lda dig1
+    clc
+    adc #'0'
+    ldx #24
+    ldy #16
+    jsr PutChar
+    lda dig0
+    clc
+    adc #'0'
+    ldx #32
+    ldy #16
+    jsr PutChar
+    rts
 
-    ; apagar el resto de los sprites
-    ldx oamIdx
-    lda #$FF
-@clr:
-    sta oam,x
-    inx
-    bne @clr
+rankY: .byte RANK_Y, RANK_Y+8, RANK_Y+16, RANK_Y+24, RANK_Y+32
+
+; Ventana movil de 5 lineas alrededor del jugador (2 arriba, el jugador, 2
+; abajo), formato "P07GAS": puesto a dos digitos + codigo de 3 letras, sin
+; sprite para el separador (el espaciado sale de la posicion X, no de un
+; caracter). La linea del jugador no tiene paleta de sprite libre para
+; resaltarse con color (las 4 ya estan asignadas: jugador, rival rojo, rival
+; plateado, texto), asi que lleva un '!' adelante.
+;
+; Cerca de los extremos (lider, ultimo) la ventana se desliza en vez de
+; mostrar puestos invalidos: arranca en clamp(puesto_jugador-2, 0, 17).
+BuildRankWindow:
+    lda rankOf+PLAYER_SLOT
+    cmp #2
+    bcs :+
+    lda #2                  ; forzar >=2 para que la resta no de negativo
+:   sec
+    sbc #2
+    cmp #NUM_DRIVERS-4       ; 18 = uno mas que el maximo valido (17)
+    bcc :+
+    lda #NUM_DRIVERS-5
+:   sta rankStart
+
+    lda #0
+    sta rankLine
+@line:
+    ldx rankLine
+    lda rankY,x
+    sta rankScrY
+
+    lda rankLine
+    clc
+    adc rankStart
+    tax                      ; X = puesto (0-based) de esta linea
+    lda orderTable,x
+    sta rankDrv
+
+    inx                      ; X = puesto (1-based), para mostrar
+    stx numLo
+    lda #0
+    sta numHi
+    jsr ToDigits             ; dig1 = decenas, dig0 = unidades
+
+    lda #RANK_X
+    sta rankX
+    lda rankStart
+    clc
+    adc rankLine
+    cmp rankOf+PLAYER_SLOT
+    bne @drawP
+    lda #'!'
+    ldx rankX
+    ldy rankScrY
+    jsr PutChar
+    lda rankX                ; +8: el ancho real de un tile, no +1
+    clc
+    adc #8
+    sta rankX
+@drawP:
+    lda #'P'
+    ldx rankX
+    ldy rankScrY
+    jsr PutChar
+    lda rankX                ; +8: el ancho real de un tile, no +1
+    clc
+    adc #8
+    sta rankX
+    lda dig1
+    clc
+    adc #'0'
+    ldx rankX
+    ldy rankScrY
+    jsr PutChar
+    lda rankX                ; +8: el ancho real de un tile, no +1
+    clc
+    adc #8
+    sta rankX
+    lda dig0
+    clc
+    adc #'0'
+    ldx rankX
+    ldy rankScrY
+    jsr PutChar
+    lda rankX                ; +8: el ancho real de un tile, no +1
+    clc
+    adc #8
+    sta rankX
+
+    ldx rankDrv
+    lda pilotCode0,x
+    ldx rankX
+    ldy rankScrY
+    jsr PutChar
+    lda rankX                ; +8: el ancho real de un tile, no +1
+    clc
+    adc #8
+    sta rankX
+    ldx rankDrv
+    lda pilotCode1,x
+    ldx rankX
+    ldy rankScrY
+    jsr PutChar
+    lda rankX                ; +8: el ancho real de un tile, no +1
+    clc
+    adc #8
+    sta rankX
+    ldx rankDrv
+    lda pilotCode2,x
+    ldx rankX
+    ldy rankScrY
+    jsr PutChar
+
+    inc rankLine
+    lda rankLine
+    cmp #5
+    beq @done
+    jmp @line                ; bne no llega: el cuerpo del loop es largo
+@done:
     rts
 
 ; A = tile/char, X = x, Y = y   (paleta 3)
