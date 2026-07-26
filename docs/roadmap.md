@@ -9,9 +9,15 @@ ultimas lo reescriben.
 
 ## 1. Largada con semaforo
 
-Estado nuevo entre el titulo y la carrera: tres luces rojas que se apagan, con
-blips en el canal de pulso, y recien ahi se habilita el control. Baratisimo:
-son cuatro sprites y un contador. Bonus: penalizar la largada adelantada.
+Estado nuevo entre la parrilla y la carrera: tres luces rojas que se apagan,
+con blips en el canal de pulso, y recien ahi se habilita el control.
+Baratisimo: son cuatro sprites y un contador. Bonus: penalizar la largada
+adelantada.
+
+La MECANICA de largada parada ya existe desde la fase 3 (`startRamp` /
+`launchSpd` en `UpdateAI`): el jugador arranca detenido y la IA acelera con la
+misma curva, asi que la largada es pareja. Lo que falta es solo la parte
+visual del semaforo y la penalizacion por adelantarse.
 
 ## 2. Musica
 
@@ -62,9 +68,12 @@ completa (fase 2). Lo que quedo pendiente:
 - ~~El trafico visual y el ranking real son sistemas separados~~ **Unificados
   despues de jugarlo.** El plan original los dejaba separados (los 4 autos en
   pantalla eran decorativos), pero al probar la ROM se notaba enseguida que
-  pasabas autos que no estaban en la carrera. Ahora `BuildCars` toma los
-  puestos vecinos al del jugador y los ubica en pantalla segun la diferencia
-  de distancia total: adelantar en pantalla es adelantar en la tabla.
+  pasabas autos que no estaban en la carrera. Ahora `BuildCars` recorre los
+  22 por indice (no por puesto: con el peloton compacto, una ventana de
+  puestos cercanos se salteaba autos que si estaban en pantalla) y ubica a
+  cada uno segun la diferencia de distancia total: adelantar en pantalla es
+  adelantar en la tabla. Con mas de `MAX_CARS` en rango a la vez, se quedan
+  los que estan mas cerca del centro de la pantalla.
 - **El pace de los 21 IA es una constante fija por piloto**, sin variacion
   segun el circuito ni condiciones de carrera (solo un reroll chico por
   vuelta, ver `ApplyLapVariation`). Cuando existan gomas (fase 4) el pace
@@ -77,3 +86,26 @@ completa (fase 2). Lo que quedo pendiente:
 - **El carril de cada auto sale de su indice de piloto**, no de una decision
   de carrera: dos rivales que corren juntos siempre van a estar en los mismos
   dos carriles. Alcanza para que no se tapen, pero no hay lucha por la linea.
+
+## 6. Pista angosta y panel unificado — HECHA
+
+La pista pasa de 24 a 16 tiles (`TRACK_HW`, `ROAD_L`/`ROAD_R`,
+`TRACK_CC`/`CC_MIN`/`CC_MAX` en `src/main.s`): antes medían 192 px, diez autos
+de ancho, desproporcionado. Y todo el HUD (vuelta, puesto, velocidad, ventana
+de posiciones) pasa a vivir junto en una franja fija a la derecha (`HUD_X`),
+en vez de repartido en dos filas arriba mas la ventana en el margen
+izquierdo. Las dos cosas se pidieron juntas porque son la misma resolucion:
+angostar la pista es lo que deja lugar para el panel sin que se superpongan
+nunca, verificado a nivel de pixel (1500 cuadros con curvas de los dos
+lados, cero invasiones).
+
+Efecto colateral que hubo que resolver: con la pista angosta, `PLAYER_X0`
+(el centro geometrico) quedaba a 11 px de un carril -- adentro del radio de
+choque de 13 px. Ir derecho por el medio de la pista chocaba SIEMPRE contra
+cualquiera que estuviera ahi. Los 4 carriles se reacomodaron en dos pares
+con un hueco central de 36 px, dejando el centro a 17 px o mas de cualquier
+carril.
+
+Pendiente para cuando existan los boxes (fase 4): la franja angosta que
+sobra deja lugar de sobra para el pit lane, que era el motivo original del
+pedido.

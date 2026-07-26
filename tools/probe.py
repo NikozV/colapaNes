@@ -12,7 +12,8 @@ el cambio por bueno. Un bug de 6502 casi nunca se ve leyendo el codigo.
 import sys
 sys.path.insert(0, __file__.rsplit('/', 1)[0])
 
-from nes_harness import Game, A, B, LEFT, RIGHT, START, SELECT, ST_TITLE, ST_RACE, ST_END, ST_CLASS
+from nes_harness import (Game, A, B, LEFT, RIGHT, START, SELECT,
+                         ST_TITLE, ST_RACE, ST_END, ST_CLASS, ST_QUALY, ST_GRID)
 
 fails = []
 
@@ -36,18 +37,123 @@ check(g.peek('bankVal') == 43,
       f"el dato de BANK0 llega al banco fijo (bankVal={g.peek('bankVal')})")
 check(g.peek('prgBank') == 0, 'queda BANK0 mapeado en $8000')
 
-print('\n== Entrar a la carrera ==')
+print('\n== Qualy ==')
+# El fin de semana arranca por la qualy: vuelta de salida (no cronometra) y
+# vuelta lanzada (si). Al terminar sale la parrilla.
 g.press(START)
-g.run(10)
-check(g.state == ST_RACE, 'START entra a la carrera')
-check(g.peek('lapNum') == 1, 'empieza en la vuelta 1')
+g.run(5)
+check(g.state == ST_QUALY, 'START entra a la qualy')
+check(g.peek('qualyLap') == 1, 'arranca en la vuelta de salida')
+check(g.peek('spdHi') == 0, 'se arranca detenido')
 check(g.screen_stats()['colores'] >= 6, 'el circuito se dibuja (pasto/pianos/asfalto)')
 
+# la vuelta de salida no cronometra
+g.drive(300)
+check(g.peek('qualyLap') == 1 and g.peek('lapFrameHi') * 256 + g.peek('lapFrameLo') == 0,
+      'la vuelta de salida no cronometra')
+
+g.drive(8000, until=lambda: g.peek('qualyLap') == 2)
+check(g.peek('qualyLap') == 2, 'al cruzar la linea arranca la vuelta lanzada')
+g.drive(120)
+crono = g.peek('lapFrameHi') * 256 + g.peek('lapFrameLo')
+check(crono > 0, f'la vuelta lanzada si cronometra ({crono} cuadros)')
+
+g.drive(8000, until=lambda: g.state != ST_QUALY)
+check(g.state == ST_GRID, 'terminada la vuelta lanzada sale la parrilla')
+check(g.peek('lapValid') == 1, 'la vuelta salio limpia y vale')
+g.shot('qualy_grid')
+
+QL, QH = g.labels['qTimeLo'], g.labels['qTimeHi']
+NUM_DRIVERS, PLAYER_SLOT = 22, 19
+VER_SLOT, LIN_SLOT = 4, 13
+GAS_SLOT = 18
+
+
+def qtime(i):
+    return g.peek(QH + i) * 256 + g.peek(QL + i)
+
+
+parrilla = g.grid()
+check(sorted(parrilla) == list(range(NUM_DRIVERS)),
+      'la parrilla es una permutacion de los 22')
+tiempos = [qtime(d) for d in parrilla]
+check(all(tiempos[i] <= tiempos[i + 1] for i in range(NUM_DRIVERS - 1)),
+      'la parrilla esta ordenada por tiempo, del mas rapido al mas lento')
+check(qtime(VER_SLOT) < qtime(LIN_SLOT),
+      f'la jerarquia se respeta (VER {qtime(VER_SLOT)} < LIN {qtime(LIN_SLOT)})')
+pole_jugador = parrilla.index(PLAYER_SLOT) + 1
+check(pole_jugador <= 6,
+      f'una vuelta limpia clasifica adelante (el jugador salio P{pole_jugador})')
+
+# Salirse con las cuatro ruedas anula la vuelta, y sin vuelta valida se larga
+# ultimo. Es la regla que le da tension a la sesion, asi que se verifica
+# corriendo una qualy entera yendose afuera a proposito.
+gq = Game()
+gq.do_qualy(target=0)          # target=0 = pegado al borde izquierdo
+check(gq.peek('lapValid') == 0, 'irse con las cuatro ruedas anula la vuelta')
+q_anulada = gq.peek(QH + PLAYER_SLOT) * 256 + gq.peek(QL + PLAYER_SLOT)
+check(q_anulada == 0xFFFF, f'la vuelta anulada no deja tiempo ({q_anulada:#06x})')
+check(gq.grid()[-1] == PLAYER_SLOT, 'sin vuelta valida se larga ultimo')
+
+# La conversion de cuadros a SS.CC se hace con enteros, y tuvo un desborde
+# que NO se veia en los datos (los tiempos estaban bien ordenados) sino solo
+# mirando la pantalla: con restos de 52 cuadros para arriba el *5 se pasaba
+# de un byte y las centesimas salian cualquier cosa. Aca se lee el
+# cronometro que la ROM dibuja de verdad -- los sprites del HUD de la qualy,
+# que salen de la misma rutina que usa la parrilla -- y se compara con los
+# cuadros transcurridos.
+def crono_en_pantalla(game):
+    """El 'SS.CC' que muestra el HUD, leido de la OAM (5 sprites tras el
+    auto y la fila de vuelta: 4 + 4 = indice 8)."""
+    oam = game.env.ram[0x200:0x300]
+    return ''.join(chr(oam[(8 + i) * 4 + 1]) for i in range(5))
+
+
+gc = Game()
+gc.run(30)
+gc.press(START)
+gc.run(5)
+gc.drive(8000, until=lambda: gc.peek('qualyLap') == 2)
+def fmt(f):
+    return f'{f // 60:02d}.{(f % 60) * 100 // 60:02d}'
+
+
+malos = []
+for _ in range(20):
+    gc.drive(17)             # muestrear restos distintos, no multiplos de 60
+    f = gc.peek('lapFrameHi') * 256 + gc.peek('lapFrameLo')
+    visto = crono_en_pantalla(gc)
+    # se aceptan el cuadro actual y el anterior: la OAM que lee Python puede
+    # ser la que se armo un cuadro antes (mismo desfasaje step/frame de
+    # siempre). Lo que se esta cazando es un error de conversion, que da
+    # diferencias grandes y no de una centesima.
+    if visto not in (fmt(f), fmt(f - 1)):
+        malos.append((f, fmt(f), visto))
+check(not malos,
+      f'el cronometro en pantalla coincide con los cuadros transcurridos '
+      f'({len(malos)} mal{": " + str(malos[:2]) if malos else ""})')
+
+print('\n== Entrar a la carrera ==')
+g.press(START)
+g.run(5)
+check(g.state == ST_RACE, 'START desde la parrilla entra a la carrera')
+check(g.peek('lapNum') == 1, 'empieza en la vuelta 1')
+check(g.peek('playerPos') == pole_jugador,
+      f'se larga desde el puesto de la qualy (P{pole_jugador})')
+# La distancia de largada depende del puesto de parrilla, asi que el chequeo
+# de consistencia de plyTotal (mas abajo) tiene que partir de este valor y no
+# de una constante.
+base_largada = g.peek('plyTotalHi') * 256 + g.peek('plyTotalLo')
+
 print('\n== Acelerar ==')
-g.run(180, A)
+# Con la pista angosta (80 px de margen) ir 180 cuadros sin girar puede
+# sacarte del asfalto apenas el circuito empieza a curvar, y eso topa la
+# velocidad -- no es lo que este bloque quiere medir. Se sigue el asfalto
+# (como el resto de los bloques) para aislar la aceleracion en si.
+g.drive(180)
 check(g.peek('spdHi') >= 3, f"acelera hasta el tope (spdHi={g.peek('spdHi')})")
 d0 = g.dist
-g.run(60, A)
+g.drive(60)
 check(g.dist > d0, 'la distancia recorrida avanza')
 
 print('\n== Los 22 pilotos ==')
@@ -104,15 +210,20 @@ for _ in range(400):
     order_streak = 0 if ordenada else order_streak + 1
     order_bad_max_streak = max(order_bad_max_streak, order_streak)
 
+    # Con empates de distancia (pasa en la largada, donde todos aceleran
+    # igual) el puesto no es un numero unico: cualquier orden entre los
+    # empatados es valido. Por eso se acepta un RANGO, de contar solo los
+    # estrictamente por delante a contar tambien los empatados.
     ply = totals[PLAYER_SLOT]
-    esperado_pos = 1 + sum(1 for i in range(NUM_DRIVERS) if i != PLAYER_SLOT and totals[i] > ply)
-    pos_ok = g.peek('playerPos') == esperado_pos
+    delante = sum(1 for i in range(NUM_DRIVERS) if i != PLAYER_SLOT and totals[i] > ply)
+    empatados = sum(1 for i in range(NUM_DRIVERS) if i != PLAYER_SLOT and totals[i] == ply)
+    pos_ok = delante + 1 <= g.peek('playerPos') <= delante + empatados + 1
     pos_streak = 0 if pos_ok else pos_streak + 1
     pos_bad_max_streak = max(pos_bad_max_streak, pos_streak)
 
     # PLAYER_START: sin qualy todavia, los 22 se escalonan en la largada y el
     # jugador arranca con esa distancia, no en 0 (ver StartRace)
-    ply_esperado = 256 + (g.peek('lapNum') - 1) * 3000 + g.dist
+    ply_esperado = base_largada + (g.peek('lapNum') - 1) * 3000 + g.dist
     ply_ok = (g.peek('plyTotalHi') * 256 + g.peek('plyTotalLo')) == ply_esperado
     ply_streak = 0 if ply_ok else ply_streak + 1
     ply_bad_max_streak = max(ply_bad_max_streak, ply_streak)
@@ -166,7 +277,24 @@ for _ in range(400):
     if any(y >= 240 for y in ys):            # fuera de pantalla
         autos_mal += 1
 check(autos_mal == 0, f'los autos en pantalla son rivales reales de la carrera ({autos_mal} cuadros mal)')
-check(autos_max >= 2, f'se ven varios rivales a la vez (maximo simultaneo: {autos_max})')
+# No se puede exigir "siempre hay varios en pantalla": largando desde la pole
+# el jugador se puede escapar y quedar solo, que es lo correcto. Lo que si
+# tiene que valer es que se dibujen TODOS los que estan en rango de pantalla
+# (hasta el tope de MAX_CARS), ni mas ni menos.
+falta = 0
+for _ in range(200):
+    g.run(1, A)
+    ply = g.peek('plyTotalHi') * 256 + g.peek('plyTotalLo')
+    en_rango = 0
+    for i in range(NUM_DRIVERS):
+        if i == PLAYER_SLOT:
+            continue
+        y = 168 - ((g.peek(TOTAL_HI + i) * 256 + g.peek(TOTAL_LO + i)) - ply)
+        if 0 <= y < 240:
+            en_rango += 1
+    if g.peek('carCount') != min(en_rango, 5):
+        falta += 1
+check(falta == 0, f'se dibujan todos los rivales que estan en pantalla ({falta} cuadros mal)')
 
 # Los pilotos de jerarquia tienen que pelear el paso mas que el fondo de
 # parrilla: es lo que hace que pasar a un Verstappen cueste y pasar a un
@@ -207,7 +335,7 @@ print('\n== El circuito curva ==')
 # error de una columna rompe la alineacion de las paletas, asi que se verifica
 # el perfil entero de la pantalla, no solo que cambie.
 CC_BASE = g.labels['rowCC']
-TRACK_CC, PLAYER_ROW = 16, 168 // 8
+TRACK_CC, PLAYER_ROW = 12, 168 // 8   # ver TRACK_CC en src/main.s (pista angosta)
 
 
 def perfil(g, top=None):
@@ -232,7 +360,14 @@ print('\n== Clasificacion completa (SELECT) ==')
 # nametables que usa el circuito curvo (Fase 1). Verifica: que el estado se
 # congele de verdad, que se retome exacto al salir, y que el circuito no
 # haya quedado roto por reusar esas nametables para texto.
-perfil_antes = perfil(g)
+# La tabla COMPLETA (60 filas), no la ventana visible: perfil() depende de
+# topRow, que avanza con los pocos cuadros reales que toma detectar la
+# transicion de SELECT (documentado mas abajo) -- comparar la ventana da
+# falsos positivos porque se corre, sin que el circuito este roto. rowCC[60]
+# en cambio nadie lo escribe mientras esta congelado (solo UpdateTrack
+# escribe ahi, y no corre durante ST_CLASS), asi que tiene que quedar
+# identico byte a byte pase lo que pase con el timing.
+rowcc_antes = [g.peek(CC_BASE + i) for i in range(60)]
 dist_antes = g.peek('distLo')
 scroll_antes = g.peek('scrollLo')
 
@@ -270,13 +405,20 @@ check(0 <= (dist_post - dist_ref) % 256 <= 12,
       f'la distancia retoma donde estaba (era {dist_ref}, quedo {dist_post})')
 check(scroll_post != 0 and abs(scroll_post - scroll_antes) <= 12,
       f'el scroll retoma donde estaba, no en 0 (era {scroll_antes}, quedo {scroll_post})')
-check(perfil(g) == perfil_antes, 'el circuito no se rompe al ir y volver de la clasificacion')
+rowcc_despues = [g.peek(CC_BASE + i) for i in range(60)]
+check(rowcc_despues == rowcc_antes, 'el circuito no se rompe al ir y volver de la clasificacion')
 g.run(8, 0)
 
 print('\n== Salirse de la pista ==')
+# Carrera nueva: los bloques de arriba ya consumieron casi toda la distancia
+# de las 3 vueltas, y lo que sigue necesita pista por delante. Cada bloque
+# desde aca arranca su propio fin de semana.
+g = Game()
+g.start_race()
+
 # Con el circuito curvo el borde ya no esta en una X fija. El test recalcula
 # el borde igual que el juego y verifica que offRoad coincida cuadro a cuadro.
-ROAD_L, ROAD_R = 48, 192
+ROAD_L, ROAD_R = 48, 128   # ver ROAD_L/ROAD_R en src/main.s (pista angosta)
 
 
 def espera_offroad(g, top_antes):
@@ -329,6 +471,8 @@ for _ in range(600):
 check(g.peek('offRoad') == 0, 'volviendo al asfalto se despenaliza')
 
 print('\n== Vueltas y meta ==')
+g = Game()
+g.start_race()
 laps_seen = {g.peek('lapNum')}
 for _ in range(120):
     g.run(60, A)

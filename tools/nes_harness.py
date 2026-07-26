@@ -34,7 +34,7 @@ RIGHT, LEFT, DOWN, UP, START, SELECT, B, A = (
 WATCH = ['gameState', 'playerX', 'spdLo', 'spdHi', 'distLo', 'distHi',
          'lapNum', 'crashT', 'offRoad', 'scrollLo', 'secs', 'mins', 'finished']
 
-ST_TITLE, ST_RACE, ST_END, ST_CLASS = 0, 1, 2, 3
+ST_TITLE, ST_RACE, ST_END, ST_CLASS, ST_QUALY, ST_GRID = 0, 1, 2, 3, 4, 5
 
 
 def load_labels(path=LABELS):
@@ -114,11 +114,57 @@ class Game:
         }
 
     # ------------------------------------------------------------- atajos
-    def start_race(self):
-        """Desde el titulo, arranca la carrera y verifica que entro."""
+    TRACK_CC = 12               # centro del asfalto en la recta (ver src/main.s)
+    PLAYER_ROW = 168 // 8       # fila de tiles donde va el auto
+    PLAYER_X0 = 87              # X de pantalla cuando el circuito esta recto
+                                 # (ver PLAYER_X0 en src/main.s)
+
+    def track_center(self):
+        """X de pantalla del centro del asfalto a la altura del auto."""
+        cc = self.peek(self.labels['rowCC']
+                       + (self.peek('topRow') + self.PLAYER_ROW) % 60)
+        return self.PLAYER_X0 + (cc - self.TRACK_CC) * 8
+
+    def drive(self, frames, extra=0, target=None, until=None):
+        """Maneja siguiendo el asfalto, que es lo minimo para que el auto
+        avance sin irse a cada curva. `extra` son botones a sostener ademas,
+        `target` fuerza una X de destino (para irse afuera a proposito), y
+        `until` corta apenas se cumple."""
+        for _ in range(frames):
+            obj = self.track_center() if target is None else target
+            x = self.peek('playerX')
+            btn = A | extra
+            if x < obj - 3:
+                btn |= RIGHT
+            elif x > obj + 3:
+                btn |= LEFT
+            self.run(1, btn)
+            if until is not None and until():
+                return True
+        return False
+
+    def do_qualy(self, target=None):
+        """Desde el titulo: entra a la qualy y la corre hasta la parrilla."""
         self.run(30)
         self.press(START)
-        self.run(10)
+        self.run(5)
+        assert self.state == ST_QUALY, \
+            f"No entro a la qualy (gameState={self.state})"
+        self.drive(8000, target=target, until=lambda: self.state != ST_QUALY)
+        assert self.state == ST_GRID, \
+            f"La qualy no termino en la parrilla (gameState={self.state})"
+        return self
+
+    def grid(self):
+        """La parrilla como lista de indices de piloto, del P1 al P22."""
+        base = self.labels['orderTable']
+        return [self.peek(base + i) for i in range(22)]
+
+    def start_race(self):
+        """Desde el titulo, atraviesa el fin de semana hasta la carrera."""
+        self.do_qualy()
+        self.press(START)
+        self.run(5)
         assert self.state == ST_RACE, \
             f"No entro a la carrera (gameState={self.state})"
         return self

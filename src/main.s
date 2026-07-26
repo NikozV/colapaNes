@@ -28,23 +28,37 @@ ST_TITLE  = 0
 ST_RACE   = 1
 ST_END    = 2
 ST_CLASS  = 3
+ST_QUALY  = 4
+ST_GRID   = 5
 
 PLAYER_Y  = 168
-ROAD_L    = 48          ; borde izquierdo del asfalto (px)
-ROAD_R    = 192         ; x maximo del auto para seguir en pista
+; GEOMETRIA DEL CIRCUITO
+; El circuito mide 16 tiles (2 de piano + 12 de asfalto + 2 de piano) y vive
+; en las columnas 0..24. Las columnas 25..30 quedan libres para el panel de
+; datos, que asi no tapa nunca la pista: el borde derecho del asfalto llega
+; como maximo a x=175 y el panel empieza en x=200.
+;
+; Antes el asfalto media 160 px, o sea diez autos de ancho: se veia
+; desproporcionado y no dejaba lugar para el panel ni, mas adelante, para los
+; boxes. Ahora mide 96 px, seis autos.
+TRACK_HW  = 8           ; media anchura del circuito, en tiles
+ROAD_L    = 48          ; borde izquierdo del asfalto (px, en coords de pista)
+ROAD_R    = 128         ; x maximo del auto para seguir entero en el asfalto
 MAXSPD_HI = 4           ; velocidad maxima (px/frame)
 LAP_LEN   = 3000        ; unidades de distancia por vuelta
 TOTAL_LAPS = 3
-TRACK_CC  = 16          ; columna del centro del asfalto en la recta
-CC_MIN    = 12          ; el circuito no puede correrse mas alla de estos
-CC_MAX    = 20          ; limites sin salirse de las 32 columnas
+TRACK_CC  = 12          ; columna del centro del asfalto en la recta
+CC_MIN    = 8           ; el circuito no puede correrse mas alla de estos
+CC_MAX    = 16          ; limites sin invadir la franja del panel
+PLAYER_X0 = 87          ; x inicial del auto: el medio del asfalto
+HUD_X     = 200         ; columna donde arranca el panel de datos
 
 NUM_AI      = 21
 NUM_DRIVERS = 22
 PLAYER_SLOT = 19        ; indice 0-based de COL en la tabla de 22 pilotos
 AIPACE_HI   = 3         ; parte entera del pace de los IA (paceLo da la fraccion)
-RANK_X      = 0         ; ventana de posiciones: margen izquierdo, fuera del asfalto
-RANK_Y      = 40        ; debajo del HUD (filas 1 y 2 en Y=8/16)
+RANK_X      = HUD_X     ; la ventana va en el panel, igual que el resto
+RANK_Y      = 48        ; debajo de vuelta, puesto y velocidad
 RANK_LINES  = 3         ; el de adelante, vos, el de atras
 RANK_SEP    = 8         ; lineas pegadas: forman un panel negro solido
 MAX_CARS    = 5         ; tope de autos dibujados a la vez (presupuesto de OAM)
@@ -52,6 +66,31 @@ PLAYER_START = 256      ; distancia inicial del jugador (deja lugar para que
                         ; los de atras arranquen con distancia menor)
 GRID_STEP   = 24        ; separacion de la parrilla provisoria, en unidades
 DEFEND_RANGE = 40       ; a que distancia un rival se pone a defender
+
+; --- qualy ---
+; El cronometro de la sesion cuenta CUADROS, no segundos: una vuelta ronda los
+; 750-950 cuadros (12-16 s) y las diferencias que deciden la parrilla son de
+; decimas. Contar cuadros ademas hace que comparar y ordenar tiempos sea una
+; resta de 16 bits, sin conversion; la conversion a SS.CC se hace una sola vez
+; al mostrarlos.
+;
+; tiempo_ia = QTIME_BASE - (ritmo_equipo + habilidad - 159) * QTIME_FACTOR
+;             + azar(0..QTIME_RAND)
+;
+; Calibrado contra lo medido con el piloto automatico (ver teamPaceLoTab): el
+; jugador da la vuelta en ~940 cuadros solo apretando A, ~860 siguiendo el
+; asfalto, ~785 limpio y 750 perfecto. Con estos numeros la IA va de 780 (VER)
+; a 940 (LIN): una vuelta limpia da segunda fila y la pole exige una casi
+; perfecta.
+QTIME_BASE   = 940
+QTIME_FACTOR = 5
+QTIME_RAND   = 31       ; medio segundo de azar, la mascara del Rand
+QTIME_NULA   = $FFFF    ; vuelta anulada o sin completar: se larga ultimo
+; Los tiempos rondan los 780-940 cuadros y no entran en un byte, asi que la
+; tabla de ROM guarda (tiempo - QTIME_OFF) y GenAITimes le suma el offset de
+; vuelta. Tiene que ser multiplo de 256 para que sumarlo sea tocar solo el
+; byte alto.
+QTIME_OFF    = 768
 
 T_GRASS_A = $01
 T_GRASS_B = $02
@@ -138,11 +177,23 @@ rankScrY:   .res 1          ; Y de pantalla de esta linea
 savedScrollLo: .res 1       ; scroll de la carrera, guardado mientras se ve
 savedScrollNT: .res 1
 
+; qualy
+lapFrameLo: .res 1          ; cronometro de la vuelta lanzada, en cuadros
+lapFrameHi: .res 1
+lapValid:   .res 1          ; 0 si se salio con las cuatro ruedas
+offRoadBad: .res 1          ; salida franca (el CENTRO del auto fuera del asfalto)
+qualyLap:   .res 1          ; 1 = vuelta de salida, 2 = vuelta lanzada
+startRamp:  .res 1          ; cuadros que le quedan a la largada parada
+launchSpd:  .res 1          ; velocidad entera de la IA mientras acelera
+launchTick: .res 1          ; para subir launchSpd cada LAUNCH_STEP cuadros
+
 ; Exportadas para que tools/probe.py pueda leerlas por nombre desde el emulador
 .exportzp gameState, playerX, spdLo, spdHi, distLo, distHi
 .exportzp lapNum, crashT, offRoad, scrollLo, secs, mins, finished
 .exportzp prgBank, bankVal, topRow, genCC
 .exportzp plyTotalLo, plyTotalHi, playerPos, oamIdx, scrollNT
+.exportzp lapFrameLo, lapFrameHi, lapValid, offRoadBad, qualyLap
+.exportzp startRamp, launchSpd
 
 .segment "OAM"
 oam:        .res 256
@@ -174,6 +225,10 @@ totalHi:    .res NUM_DRIVERS
 paceFrac:   .res NUM_DRIVERS   ; acumulador fraccionario del pace de la IA
 orderTable: .res NUM_DRIVERS   ; orderTable[i] = piloto en el puesto i (0-based)
 rankOf:     .res NUM_DRIVERS   ; inverso: rankOf[piloto] = puesto (0-based)
+qTimeLo:    .res NUM_DRIVERS   ; tiempo de qualy de cada uno, en cuadros
+qTimeHi:    .res NUM_DRIVERS
+
+.export qTimeLo, qTimeHi
 
 .export totalLo, totalHi, orderTable, rankOf
 
@@ -195,6 +250,7 @@ pilotCode2: .res NUM_DRIVERS
 pilotTeam:  .res NUM_DRIVERS   ; team_id 0..10
 teamPaceLo: .res NUM_DRIVERS   ; parte fraccionaria del pace (0 en PLAYER_SLOT)
 defBonus:   .res NUM_DRIVERS   ; cuanto aprieta cada uno defendiendo
+qBase:      .res NUM_DRIVERS   ; tiempo base de qualy, menos QTIME_OFF
 
 teamName0:  .res 11            ; abreviatura de equipo, 3 letras
 teamName1:  .res 11
@@ -298,6 +354,8 @@ CopyPilotTable:
     sta teamPaceLo,x
     lda defBonusTab,x
     sta defBonus,x
+    lda qBaseTab,x
+    sta qBase,x
     inx
     cpx #NUM_DRIVERS
     bne @drivers
@@ -443,6 +501,35 @@ defBonusTab:
     .byte (86-76)*2   ; PER
     .byte (85-76)*2   ; BOT
 
+; Tiempo base de qualy de cada IA, en cuadros, ya resuelto por ca65:
+; QTIME_BASE - (ritmo_equipo + habilidad - 159) * QTIME_FACTOR. En tiempo de
+; ejecucion GenAITimes le suma el azar. Va en un byte porque todos los valores
+; caen entre 780 y 940... que NO entra en un byte: por eso la tabla guarda el
+; tiempo menos 512, y GenAITimes reconstruye. Ver el comentario ahi.
+qBaseTab:
+    .byte QTIME_BASE-(95+95-159)*QTIME_FACTOR-QTIME_OFF   ; NOR
+    .byte QTIME_BASE-(95+94-159)*QTIME_FACTOR-QTIME_OFF   ; PIA
+    .byte QTIME_BASE-(92+95-159)*QTIME_FACTOR-QTIME_OFF   ; LEC
+    .byte QTIME_BASE-(92+93-159)*QTIME_FACTOR-QTIME_OFF   ; HAM
+    .byte QTIME_BASE-(92+99-159)*QTIME_FACTOR-QTIME_OFF   ; VER
+    .byte QTIME_BASE-(92+85-159)*QTIME_FACTOR-QTIME_OFF   ; HAD
+    .byte QTIME_BASE-(90+93-159)*QTIME_FACTOR-QTIME_OFF   ; RUS
+    .byte QTIME_BASE-(90+87-159)*QTIME_FACTOR-QTIME_OFF   ; ANT
+    .byte QTIME_BASE-(85+88-159)*QTIME_FACTOR-QTIME_OFF   ; ALB
+    .byte QTIME_BASE-(85+90-159)*QTIME_FACTOR-QTIME_OFF   ; SAI
+    .byte QTIME_BASE-(84+92-159)*QTIME_FACTOR-QTIME_OFF   ; ALO
+    .byte QTIME_BASE-(84+78-159)*QTIME_FACTOR-QTIME_OFF   ; STR
+    .byte QTIME_BASE-(83+82-159)*QTIME_FACTOR-QTIME_OFF   ; LAW
+    .byte QTIME_BASE-(83+76-159)*QTIME_FACTOR-QTIME_OFF   ; LIN
+    .byte QTIME_BASE-(82+87-159)*QTIME_FACTOR-QTIME_OFF   ; HUL
+    .byte QTIME_BASE-(82+82-159)*QTIME_FACTOR-QTIME_OFF   ; BOR
+    .byte QTIME_BASE-(82+85-159)*QTIME_FACTOR-QTIME_OFF   ; OCO
+    .byte QTIME_BASE-(82+84-159)*QTIME_FACTOR-QTIME_OFF   ; BEA
+    .byte QTIME_BASE-(80+87-159)*QTIME_FACTOR-QTIME_OFF   ; GAS
+    .byte 0                                          ; COL - jugador
+    .byte QTIME_BASE-(76+86-159)*QTIME_FACTOR-QTIME_OFF   ; PER
+    .byte QTIME_BASE-(76+85-159)*QTIME_FACTOR-QTIME_OFF   ; BOT
+
 ; MCL FER RBR MER WIL AST RCB AUD HAA ALP CAD
 teamName0Tab: .byte "MFRMWARAHAC"
 teamName1Tab: .byte "CEBEISCUALA"
@@ -518,6 +605,14 @@ main:
 :   cmp #ST_CLASS
     bne :+
     jsr ClassLogic
+    jmp main
+:   cmp #ST_QUALY
+    bne :+
+    jsr QualyLogic
+    jmp main
+:   cmp #ST_GRID
+    bne :+
+    jsr GridLogic
     jmp main
 :   jsr EndLogic
     jmp main
@@ -842,6 +937,542 @@ TitleLogic:
     and #BTN_START
     beq :+
     jsr Blip
+    jsr GoQualy             ; el fin de semana arranca por la qualy
+:   rts
+
+;=============================================================================
+; QUALY
+;
+; Una sola vuelta lanzada. Se arranca DETENIDO: la primera vuelta es de
+; salida y no cronometra, la segunda si. Salirse con las cuatro ruedas la
+; anula, y sin vuelta valida se larga ultimo.
+;
+; Lo que las reglas piden y todavia no entra: arrancar en boxes, salir por el
+; pit lane y su limite de velocidad. Todo eso es geometria de pista que llega
+; con los boxes (fase 4), no una simplificacion por comodidad.
+;=============================================================================
+GoQualy:
+    jsr RenderOff
+    jsr CopyPilotTable
+    lda #0
+    sta scrollLo
+    sta scrollNT
+    sta lastTop
+    sta topRow
+    sta rowReady
+    jsr DrawTrack
+
+    lda #PLAYER_X0
+    sta playerX
+    lda #0
+    sta playerXf
+    sta spdLo
+    sta spdHi                ; se arranca detenido
+    sta distLo
+    sta distHi
+    sta crashT
+    sta scrollFrac
+    sta finished
+    sta carCount
+    sta lapFrameLo
+    sta lapFrameHi
+    lda #1
+    sta lapNum
+    sta qualyLap             ; 1 = vuelta de salida
+    sta lapValid
+
+    lda #ST_QUALY
+    sta gameState
+    jsr RenderOn
+    rts
+
+; Como RaceLogic pero sin rivales en pista: en la qualy se sale solo. Los 21
+; tiempos de la IA no se manejan, se generan por formula al terminar.
+QualyLogic:
+    jsr UpdatePlayer
+    jsr UpdateScroll
+    jsr UpdateTrack
+    jsr QualyDistance
+    ; QualyDistance puede haber cerrado la sesion y saltado a la parrilla; en
+    ; ese caso no hay que seguir armando sprites de carrera encima, que
+    ; volverian a dibujar el auto sobre la pantalla de parrilla.
+    lda gameState
+    cmp #ST_QUALY
+    bne @rts
+    jsr EngineSound
+    jsr BuildOAMQualy
+@rts:
+    rts
+
+; Avanza la distancia y el cronometro. La vuelta de salida no cuenta; la
+; lanzada si, y termina la sesion al cruzar la linea.
+QualyDistance:
+    lda distLo
+    clc
+    adc spdHi
+    sta distLo
+    lda distHi
+    adc #0
+    sta distHi
+
+    lda qualyLap             ; el cronometro solo corre en la vuelta lanzada
+    cmp #2
+    bne @nocrono
+    inc lapFrameLo
+    bne @nocrono
+    inc lapFrameHi
+@nocrono:
+
+    ; salirse con las cuatro ruedas anula la vuelta lanzada
+    lda offRoadBad
+    beq @lineacheck
+    lda qualyLap
+    cmp #2
+    bne @lineacheck
+    lda #0
+    sta lapValid
+
+@lineacheck:
+    lda distHi
+    cmp #>LAP_LEN
+    bcc @rts
+    bne @cruza
+    lda distLo
+    cmp #<LAP_LEN
+    bcc @rts
+@cruza:
+    lda distLo
+    sec
+    sbc #<LAP_LEN
+    sta distLo
+    lda distHi
+    sbc #>LAP_LEN
+    sta distHi
+    jsr Blip
+
+    lda qualyLap
+    cmp #2
+    beq @finvuelta
+    lda #2                   ; se termino la de salida: arranca la lanzada
+    sta qualyLap
+    lda #2
+    sta lapNum
+    lda #0
+    sta lapFrameLo
+    sta lapFrameHi
+    rts
+@finvuelta:
+    jsr FinishQualy
+@rts:
+    rts
+
+; HUD de la qualy: vuelta, cronometro y si la vuelta esta anulada.
+BuildOAMQualy:
+    lda #0
+    sta oamIdx
+
+    lda playerX
+    sta tmp1
+    lda #PLAYER_Y
+    sta tmp2
+    lda #0
+    sta tmp3
+    jsr PutCar
+
+    lda #'V'
+    ldx #HUD_X
+    ldy #8
+    jsr PutChar
+    lda qualyLap
+    clc
+    adc #'0'
+    ldx #HUD_X+8
+    ldy #8
+    jsr PutChar
+    lda #'/'
+    ldx #HUD_X+16
+    ldy #8
+    jsr PutChar
+    lda #'2'
+    ldx #HUD_X+24
+    ldy #8
+    jsr PutChar
+
+    ; cronometro SS.CC, o "-----" si la vuelta ya esta anulada
+    lda lapValid
+    bne @crono
+    ldx #HUD_X
+    ldy #16
+    lda #'-'
+    jsr PutChar
+    lda #'-'
+    ldx #HUD_X+8
+    ldy #16
+    jsr PutChar
+    lda #'-'
+    ldx #HUD_X+16
+    ldy #16
+    jsr PutChar
+    lda #'-'
+    ldx #HUD_X+24
+    ldy #16
+    jsr PutChar
+    lda #'-'
+    ldx #HUD_X+32
+    ldy #16
+    jsr PutChar
+    jmp @clr
+@crono:
+    lda lapFrameLo
+    sta numLo
+    lda lapFrameHi
+    sta numHi
+    jsr FramesToTime         ; dig2 = decenas de seg, dig1/dig0 = unidad y centesimas
+    lda tmp5
+    clc
+    adc #'0'
+    ldx #HUD_X
+    ldy #16
+    jsr PutChar
+    lda tmp6
+    clc
+    adc #'0'
+    ldx #HUD_X+8
+    ldy #16
+    jsr PutChar
+    lda #'.'
+    ldx #HUD_X+16
+    ldy #16
+    jsr PutChar
+    lda dig1
+    clc
+    adc #'0'
+    ldx #HUD_X+24
+    ldy #16
+    jsr PutChar
+    lda dig0
+    clc
+    adc #'0'
+    ldx #HUD_X+32
+    ldy #16
+    jsr PutChar
+
+@clr:
+    ldx oamIdx
+    lda #$FF
+:   sta oam,x
+    inx
+    bne :-
+    rts
+
+; numLo/numHi = cuadros -> tmp5 (decenas de seg), tmp6 (unidades),
+; dig1/dig0 (centesimas). A 60 cuadros por segundo.
+FramesToTime:
+    lda #0
+    sta tmp5
+    sta tmp6
+@seg:
+    lda numHi                ; mientras queden 60 cuadros, es un segundo mas
+    bne @resta
+    lda numLo
+    cmp #60
+    bcc @cent
+@resta:
+    lda numLo
+    sec
+    sbc #60
+    sta numLo
+    lda numHi
+    sbc #0
+    sta numHi
+    inc tmp6
+    lda tmp6
+    cmp #10
+    bne @seg
+    lda #0
+    sta tmp6
+    inc tmp5
+    jmp @seg
+@cent:
+    ; Lo que sobra son cuadros (0..59) -> centesimas = cuadros * 100 / 60, que
+    ; es lo mismo que cuadros * 5 / 3.
+    ;
+    ; El *5 va en 16 BITS a proposito: 59*5 = 295 no entra en un byte, y
+    ; hacerlo en 8 lo envolvia a 39, mostrando ".13" donde iba ".98".
+    lda numLo
+    sta tmp1
+    lda #0
+    sta numHi
+    lda tmp1
+    asl a
+    rol numHi
+    asl a
+    rol numHi                ; *4 en 16 bits
+    clc
+    adc tmp1
+    sta numLo
+    lda numHi
+    adc #0
+    sta numHi                ; *5
+    ldx #0
+@div3:
+    lda numHi                ; mientras el resto sea >= 3, sacarle 3
+    bne @resta3
+    lda numLo
+    cmp #3
+    bcc @listo
+@resta3:
+    lda numLo
+    sec
+    sbc #3
+    sta numLo
+    lda numHi
+    sbc #0
+    sta numHi
+    inx
+    jmp @div3
+@listo:
+    stx numLo
+    lda #0
+    sta numHi
+    jsr ToDigits             ; deja dig1 = decenas, dig0 = unidades
+    rts
+
+; Cierra la sesion: guarda el tiempo del jugador, genera los 21 de la IA,
+; ordena la parrilla y va a la pantalla de grid.
+FinishQualy:
+    lda lapValid
+    beq @anulada
+    lda lapFrameLo
+    sta qTimeLo+PLAYER_SLOT
+    lda lapFrameHi
+    sta qTimeHi+PLAYER_SLOT
+    jmp @ia
+@anulada:
+    lda #<QTIME_NULA         ; sin vuelta valida se larga ultimo
+    sta qTimeLo+PLAYER_SLOT
+    lda #>QTIME_NULA
+    sta qTimeHi+PLAYER_SLOT
+@ia:
+    jsr GenAITimes
+    jsr SortByQualy
+    jsr GoGrid
+    rts
+
+; Los 21 tiempos de la IA no se manejan: salen de la formula de las reglas,
+; tiempo_base menos lo que valen equipo y piloto, mas un azar chico. El azar
+; es lo que hace que la sesion valga la pena repetirla: da vuelta el orden
+; entre pilotos parecidos sin romper la jerarquia general.
+; El tiempo final se arma como QTIME_OFF + tabla + azar (ver QTIME_OFF).
+GenAITimes:
+    ldx #0
+@lp:
+    cpx #PLAYER_SLOT
+    beq @next
+    jsr Rand
+    lda seed
+    and #QTIME_RAND
+    clc
+    adc qBase,x              ; la copia en RAM, NO qBaseTab: esa vive en BANK3
+                             ; y aca esta mapeado BANK0, se leeria basura
+    sta qTimeLo,x
+    lda #>QTIME_OFF
+    adc #0                   ; el acarreo de la suma de arriba
+    sta qTimeHi,x
+@next:
+    inx
+    cpx #NUM_DRIVERS
+    bne @lp
+    rts
+
+; Ordena orderTable por tiempo de qualy ASCENDENTE. SortAllDrivers ya ordena
+; por totalLo/Hi descendente, asi que en vez de escribir un segundo sort se
+; carga el MERITO ($FFFF - tiempo) y se reusa la que ya esta probada.
+SortByQualy:
+    ldx #0
+@lp:
+    lda #$FF
+    sec
+    sbc qTimeLo,x
+    sta totalLo,x
+    lda #$FF
+    sbc qTimeHi,x
+    sta totalHi,x
+    txa
+    sta orderTable,x
+    inx
+    cpx #NUM_DRIVERS
+    bne @lp
+    jsr SortAllDrivers
+    rts
+
+;=============================================================================
+; PANTALLA DE PARRILLA
+;=============================================================================
+gridtxt: .byte "PARRILLA", 0
+
+GoGrid:
+    jsr RenderOff
+    jsr SilenceEngine
+    ; UpdateTrack corre antes que QualyDistance en el mismo cuadro, asi que
+    ; puede haber dejado una fila del circuito esperando: si no se descarta,
+    ; el NMI la escribe encima de la parrilla recien dibujada.
+    lda #0
+    sta rowReady
+    sta attrReady
+
+    lda #<$2000
+    sta ptr
+    lda #>$2000
+    sta ptr+1
+    lda #$20
+    jsr FillNT
+
+    bit PPUSTATUS
+    lda #$23
+    sta PPUADDR
+    lda #$C0
+    sta PPUADDR
+    ldx #64
+    lda #$FF
+:   sta PPUDATA
+    dex
+    bne :-
+
+    lda #<gridtxt
+    sta ptr
+    lda #>gridtxt
+    sta ptr+1
+    lda #$2C
+    sta tmp3
+    lda #$20
+    sta tmp4
+    jsr DrawText
+
+    lda #0
+    sta rankLine
+@row:
+    ldx rankLine
+    lda orderTable,x
+    sta rankDrv
+
+    lda rankLine
+    clc
+    adc #4
+    jsr SetClassAddr
+    bit PPUSTATUS
+    lda tmp4
+    sta PPUADDR
+    lda tmp3
+    sta PPUADDR
+
+    lda #' '
+    sta PPUDATA
+    sta PPUDATA
+    lda #'P'
+    sta PPUDATA
+    lda rankLine
+    clc
+    adc #1
+    sta numLo
+    lda #0
+    sta numHi
+    jsr ToDigits
+    lda dig1
+    clc
+    adc #'0'
+    sta PPUDATA
+    lda dig0
+    clc
+    adc #'0'
+    sta PPUDATA
+    lda #' '
+    sta PPUDATA
+    ldx rankDrv
+    lda pilotCode0,x
+    sta PPUDATA
+    lda pilotCode1,x
+    sta PPUDATA
+    lda pilotCode2,x
+    sta PPUDATA
+    lda #' '
+    sta PPUDATA
+    ldx rankDrv
+    lda pilotTeam,x
+    tax
+    lda teamName0,x
+    sta PPUDATA
+    lda teamName1,x
+    sta PPUDATA
+    lda teamName2,x
+    sta PPUDATA
+    lda #' '
+    sta PPUDATA
+
+    ; tiempo, o "-----" si no hizo vuelta valida
+    ldx rankDrv
+    lda qTimeHi,x
+    cmp #>QTIME_NULA
+    bne @contiempo
+    lda qTimeLo,x
+    cmp #<QTIME_NULA
+    bne @contiempo
+    ldx #5
+    lda #'-'
+:   sta PPUDATA
+    dex
+    bne :-
+    jmp @sig
+@contiempo:
+    lda qTimeLo,x
+    sta numLo
+    lda qTimeHi,x
+    sta numHi
+    jsr FramesToTime
+    lda tmp5
+    clc
+    adc #'0'
+    sta PPUDATA
+    lda tmp6
+    clc
+    adc #'0'
+    sta PPUDATA
+    lda #'.'
+    sta PPUDATA
+    lda dig1
+    clc
+    adc #'0'
+    sta PPUDATA
+    lda dig0
+    clc
+    adc #'0'
+    sta PPUDATA
+@sig:
+    inc rankLine
+    lda rankLine
+    cmp #NUM_DRIVERS
+    beq @fin
+    jmp @row
+@fin:
+    ldx #0
+    lda #$FF
+:   sta oam,x
+    inx
+    bne :-
+
+    lda #0
+    sta scrollLo
+    sta scrollNT
+    lda #ST_GRID
+    sta gameState
+    jsr RenderOn
+    rts
+
+GridLogic:
+    lda padNew
+    and #BTN_START
+    beq :+
+    jsr Blip
     jsr StartRace
 :   rts
 
@@ -859,7 +1490,7 @@ StartRace:
     sta rowReady
     jsr DrawTrack
 
-    lda #120
+    lda #PLAYER_X0
     sta playerX
     lda #0
     sta playerXf
@@ -879,36 +1510,45 @@ StartRace:
     sta scrollLo
     sta scrollNT
 
-    ; --- los 22 pilotos ---
-    ; Sin qualy todavia (fase 3) no hay parrilla de verdad, pero tampoco
-    ; pueden arrancar todos en la misma distancia: quedarian encimados en el
-    ; mismo punto de la pista. Se escalonan GRID_STEP unidades entre si en el
-    ; orden de la tabla, con el jugador en PLAYER_START, asi que se larga
-    ; desde el medio del peloton. El carril sale del indice de piloto
-    ; (laneX en BuildCars), asi que dos autos consecutivos no se pisan.
+    ; --- la parrilla ---
+    ; Se larga desde el puesto que salio de la qualy: orderTable ya viene
+    ; ordenada por tiempo (SortByQualy), asi que el que quedo primero arranca
+    ; con la mayor distancia y de ahi para abajo, GRID_STEP entre auto y auto.
+    ; Es lo que le da consecuencia a la sesion.
     lda #0
     sta carCount
-    lda #<PLAYER_START
-    sta plyTotalLo
-    lda #>PLAYER_START
-    sta plyTotalHi
+    lda #85                  ; largada parada: ver la rampa en UpdateAI
+    sta startRamp
+    lda #0
+    sta launchSpd
+    sta launchTick
 
-    lda #<(PLAYER_START + PLAYER_SLOT * GRID_STEP)
+    lda #<(PLAYER_START + (NUM_DRIVERS-1) * GRID_STEP)
     sta tmp1
-    lda #>(PLAYER_START + PLAYER_SLOT * GRID_STEP)
+    lda #>(PLAYER_START + (NUM_DRIVERS-1) * GRID_STEP)
     sta tmp2
     ldx #0
 @pl:
+    ldy orderTable,x         ; el piloto que largue en el puesto x
     lda tmp1
-    sta totalLo,x
+    sta totalLo,y
     lda tmp2
-    sta totalHi,x
+    sta totalHi,y
     lda #0
-    sta paceFrac,x
+    sta paceFrac,y
     txa
-    sta orderTable,x        ; orden identidad: orderTable[i] = i
-    sta rankOf,x
-    lda tmp1                ; el siguiente arranca GRID_STEP mas atras
+    sta rankOf,y
+    cpy #PLAYER_SLOT         ; el jugador lleva su propio acumulador
+    bne :+
+    lda tmp1
+    sta plyTotalLo
+    lda tmp2
+    sta plyTotalHi
+    txa
+    clc
+    adc #1
+    sta playerPos
+:   lda tmp1                 ; el siguiente arranca GRID_STEP mas atras
     sec
     sbc #GRID_STEP
     sta tmp1
@@ -918,8 +1558,6 @@ StartRace:
     inx
     cpx #NUM_DRIVERS
     bne @pl
-    lda #PLAYER_SLOT+1      ; puesto nominal hasta el primer UpdatePositions
-    sta playerPos
 
     lda #ST_RACE
     sta gameState
@@ -1142,34 +1780,53 @@ UpdatePlayer:
 
 @move:
     ; limites de pantalla
+    ; Limites de pantalla. Por la derecha no se llega hasta el borde: el auto
+    ; tiene que quedar afuera de la franja del panel de datos (HUD_X).
     lda playerX
-    cmp #24
+    cmp #8
     bcs :+
-    lda #24
+    lda #8
     sta playerX
 :   lda playerX
-    cmp #208
+    cmp #HUD_X-16
     bcc :+
-    lda #208
+    lda #HUD_X-16
     sta playerX
 :
     ; fuera de pista? El circuito se corre, asi que el borde no es fijo: hay
     ; que mirar donde esta el asfalto a la altura del auto.
     lda #0
     sta offRoad
+    sta offRoadBad
     jsr PlayerShift
     sta tmp3
     lda playerX
     sec
     sbc tmp3                ; llevar el auto al marco del circuito recto
+    sta tmp4                ; X del auto en coordenadas de pista
     cmp #ROAD_L
     bcc @off
     cmp #ROAD_R+1
-    bcc :+
+    bcc @dentro
 @off:
     lda #1
     sta offRoad
-:   rts
+
+    ; Salida FRANCA, la que anula la vuelta de qualy. offRoad marca "una rueda
+    ; afuera" (basta que se pase el borde del auto); la regla habla de las
+    ; cuatro ruedas, asi que aca se mira el CENTRO del auto contra el asfalto.
+    lda tmp4
+    clc
+    adc #8                  ; centro del auto, que mide 16 px de ancho
+    cmp #ROAD_L
+    bcc @bad
+    cmp #ROAD_R+16
+    bcc @dentro
+@bad:
+    lda #1
+    sta offRoadBad
+@dentro:
+    rts
 
 ; A = Y en pantalla -> A = cuanto esta corrido el circuito a esa altura, en
 ; pixeles y con signo. Es lo que convierte entre coordenadas de pantalla y
@@ -1328,14 +1985,14 @@ BuildRow:
     sec
     sbc genCC
     clc
-    adc #12
-    cmp #24                 ; e >= 24: se paso del circuito (o quedo negativo,
+    adc #TRACK_HW
+    cmp #2*TRACK_HW         ; e >= 16: se paso del circuito (o quedo negativo,
     bcs @outside            ; que envuelve por arriba). Grava o pasto.
     cmp #2
     bcc @curb
-    cmp #22
+    cmp #2*TRACK_HW-2
     bcs @curb
-    cmp #11
+    cmp #TRACK_HW-1         ; la raya del medio
     bne @road
     lda genRow              ; la raya del medio va cortada
     and #1
@@ -1359,8 +2016,8 @@ BuildRow:
 ; no toca), asi que no agrega ningun limite de paleta nuevo: los atributos
 ; siguen siendo los mismos que sin grava.
 @outside:
-    cmp #26
-    bcc @gravel             ; e = 24,25 -> grava del lado derecho
+    cmp #2*TRACK_HW+2
+    bcc @gravel             ; e = 16,17 -> grava del lado derecho
     cmp #254
     bcs @gravel             ; e = 254,255 (o sea -2,-1) -> grava del izquierdo
     jmp @grass
@@ -1434,8 +2091,10 @@ SetRowAddr:
 
 ; Circuito: pares (bloques, cuanto se corre el centro por bloque). Arranca y
 ; termina en TRACK_CC para que el lazo cierre sin salto.
+; Recorrido del centro, arrancando y terminando en TRACK_CC (12) para que el
+; lazo cierre sin salto: 12 -> 16 -> 8 -> 12 -> 8 -> 12.
 segLen:   .byte 12,  2,  8,  4,  8,  2, 10,  2,  6,  2
-segDelta: .byte  0,  2,  0, $FE, 0, $FE, 0,  2,  0,  2
+segDelta: .byte  0,  2,  0, $FE, 0,  2,  0, $FE, 0,  2
 NUM_SEG = 10
 
 ; Corre el centro del circuito un escalon. Se llama una vez por bloque.
@@ -1471,12 +2130,12 @@ ColPal:
     sec
     sbc genCC
     clc
-    adc #12                 ; e, igual que en BuildRow
+    adc #TRACK_HW           ; e, igual que en BuildRow
     beq @curb               ; e = 0    -> piano izquierdo
-    cmp #22
-    beq @curb               ; e = 22   -> piano derecho
-    cmp #21
-    bcs @grass              ; e > 20 (o negativo, que envuelve alto)
+    cmp #2*TRACK_HW-2
+    beq @curb               ; e = 14   -> piano derecho
+    cmp #2*TRACK_HW-3
+    bcs @grass              ; e > 13 (o negativo, que envuelve alto)
     cmp #2
     bcc @grass
     lda #1                  ; asfalto
@@ -1590,73 +2249,135 @@ WriteRowNow:
 ; clasificacion. Antes eran sistemas separados y se veian autos que no eran
 ; de la carrera.
 ;=============================================================================
+; Cuatro carriles en los 96 px de asfalto (x 48..143 en coordenadas de
+; pista), en dos pares separados por un hueco central de 36 px. El auto va
+; SIEMPRE derecho por PLAYER_X0 (87, el medio geometrico de la pista) salvo
+; que lo corras vos: si un carril quedara a menos de 13 px de ahi (el radio
+; del choque), ir derecho por el medio de la pista chocaria SIEMPRE contra
+; cualquiera que este en ese carril -- el centro tiene que ser la linea mas
+; segura, no un iman. Los cuatro quedan a 17 px o mas de PLAYER_X0.
 laneX:
-    .byte 56, 92, 132, 168
+    .byte 52, 68, 104, 120
 
+; Recorre los 21 IA por INDICE, no por puesto: con el peloton compacto (los
+; ritmos quedaron a proposito muy juntos, ver teamPaceLoTab) puede haber mas
+; de MAX_CARS a la vez dentro de pantalla, y barrer solo una ventana de
+; puestos cercanos al del jugador se salteaba autos que si estaban en rango
+; -- se vio jugando, con carCount por debajo de lo que de verdad habia en
+; pantalla. Ahora se prueban los 22 y, cuando el cupo esta lleno, un
+; candidato nuevo desplaza al que este mas lejos del centro (Y=PLAYER_Y) si
+; el candidato esta mas cerca. Siempre quedan dibujados los MAX_CARS mas
+; cercanos de verdad, sin importar cuantos haya alrededor.
 BuildCars:
     lda #0
     sta carCount
-
-    ; arrancar unos puestos por delante del jugador y barrer hacia atras
-    lda rankOf+PLAYER_SLOT
-    sec
-    sbc #MAX_CARS/2+1
-    bcs :+
-    lda #0                   ; el jugador va puntero: barrer desde el primero
-:   sta tmp5                  ; tmp5 = puesto que se esta mirando
-@lp:
-    lda carCount
-    cmp #MAX_CARS
-    beq @done
-    lda tmp5
-    cmp #NUM_DRIVERS
-    bcs @done
-
-    ldy tmp5
-    lda orderTable,y
-    sta tmp6                  ; tmp6 = piloto de ese puesto
-    cmp #PLAYER_SLOT
-    beq @next                 ; al jugador lo dibuja BuildOAM aparte
-
-    ; y = PLAYER_Y - (total[rival] - total[jugador]), en 16 bits
-    ldy tmp6
-    lda totalLo,y
+    ldx #0
+@scan:
+    cpx #PLAYER_SLOT
+    bne :+
+    jmp @next                 ; al jugador lo dibuja BuildOAM aparte
+:
+    ; y = PLAYER_Y - (total[x] - total[jugador]), en 16 bits
+    lda totalLo,x
     sec
     sbc plyTotalLo
     sta tmp1
-    lda totalHi,y
+    lda totalHi,x
     sbc plyTotalHi
     sta tmp2
 
     lda #PLAYER_Y
     sec
     sbc tmp1
-    sta tmp3                  ; y lo
+    sta tmp3                  ; candidato: y de pantalla
     lda #0
     sbc tmp2
-    bne @next                 ; y no entra en un byte -> fuera de pantalla
-    lda tmp3
+    beq :+
+    jmp @next                 ; y no entra en un byte -> fuera de pantalla
+:   lda tmp3
     cmp #240
-    bcs @next                 ; abajo del borde inferior
+    bcc :+
+    jmp @next                 ; abajo del borde inferior
+:
 
-    ldx carCount
-    sta carY,x
-    lda tmp6
-    sta carDrv,x
+    ; distancia del candidato al centro de la pantalla (a mayor distancia,
+    ; mas facil de sacrificar si el cupo esta lleno)
+    lda tmp3
+    sec
+    sbc #PLAYER_Y
+    bcs @posdist
+    eor #$FF
+    clc
+    adc #1
+@posdist:
+    sta tmp4
+
+    lda carCount
+    cmp #MAX_CARS
+    bcc @append
+
+    ; cupo lleno: buscar el que este MAS LEJOS de los MAX_CARS actuales
+    ldy #0
+    lda carY,y
+    sec
+    sbc #PLAYER_Y
+    bcs :+
+    eor #$FF
+    clc
+    adc #1
+:   sta tmp5                  ; tmp5 = peor distancia vista hasta ahora
+    sty tmp6                  ; tmp6 = indice de ese slot
+    iny
+@worse:
+    cpy #MAX_CARS
+    beq @gotworst
+    lda carY,y
+    sec
+    sbc #PLAYER_Y
+    bcs :+
+    eor #$FF
+    clc
+    adc #1
+:   cmp tmp5
+    bcc @notworse
+    sta tmp5
+    sty tmp6
+@notworse:
+    iny
+    jmp @worse
+@gotworst:
+    lda tmp4
+    cmp tmp5
+    bcs @next                 ; el candidato no mejora al peor actual: afuera
+    ldy tmp6                  ; reemplaza ese slot
+    jmp @store
+
+@append:
+    ldy carCount
+    inc carCount
+
+@store:
+    stx tmp5                  ; guardar el indice de piloto: X se va a pisar
+    lda tmp3
+    sta carY,y
+    lda tmp5
+    sta carDrv,y
     and #3
-    tay
-    lda laneX,y               ; el carril sale del indice de piloto: los que
-    sta carX,x                ; corren juntos quedan en carriles distintos
-    ldy tmp6
-    lda pilotTeam,y
+    tax
+    lda laneX,x
+    sta carX,y
+    ldx tmp5
+    lda pilotTeam,x
     and #1
     clc
     adc #1                    ; paletas de sprite 1 o 2 (la 0 es del jugador)
-    sta carPal,x
-    inc carCount
+    sta carPal,y
+    ldx tmp5                  ; restaurar X: es el contador del scan principal
 @next:
-    inc tmp5
-    jmp @lp
+    inx
+    cpx #NUM_DRIVERS
+    beq @done
+    jmp @scan
 @done:
     rts
 
@@ -1818,7 +2539,33 @@ SyncPlayerSlot:
 ; cuadros. paceFrac es el acumulador fraccionario aparte: solo su ACARREO
 ; (0 o 1 vez cada varios cuadros) entra a totalLo/Hi, igual que scrollFrac
 ; hace con scrollLo.
+; LARGADA PARADA
+;
+; El jugador arranca detenido y su distancia crece con spdHi, que es la parte
+; ENTERA de la velocidad: durante los primeros 85 cuadros va 0, 1, 2 y 3, o
+; sea que acumula 127 unidades donde a fondo acumularia 340. La IA no tiene
+; modelo de aceleracion: sin esto saldria a ritmo pleno desde el primer cuadro
+; y le sacaria unos 6 puestos al jugador en la largada, borrando justo lo que
+; la qualy acababa de decidir.
+;
+; Asi que durante la rampa la IA usa launchSpd en vez de AIPACE_HI, y
+; launchSpd sube de a uno cada LAUNCH_STEP cuadros: exactamente la misma curva
+; que sigue el spdHi del jugador. Todos aceleran igual y las diferencias de
+; ritmo recien pesan cuando el peloton ya esta lanzado.
+LAUNCH_STEP = 21            ; 256/12, los cuadros que tarda spdHi en subir uno
+
 UpdateAI:
+    lda startRamp
+    beq @full
+    dec startRamp
+    inc launchTick
+    lda launchTick
+    cmp #LAUNCH_STEP
+    bcc @full
+    lda #0
+    sta launchTick
+    inc launchSpd
+@full:
     ldx #0
 @lp:
     cpx #PLAYER_SLOT
@@ -1853,12 +2600,26 @@ UpdateAI:
     adc defBonus,x
     sta tmp1
 @sinpelea:
+    ; Mientras dura la largada la IA acelera con launchSpd y NADA MAS: sin su
+    ; fraccion de ritmo, igual que el jugador, que en esos cuadros solo suma
+    ; la parte entera de su velocidad. Si se le dejara la fraccion, el mejor
+    ; rival sacaria ~65 unidades (casi 3 puestos) nada mas que por arrancar.
+    lda startRamp
+    beq @normal
+    lda #0
+    sta tmp1                 ; sin fraccion durante la largada
+    lda launchSpd
+    jmp @sumar
+@normal:
+    lda #AIPACE_HI
+@sumar:
+    sta tmp2
     lda paceFrac,x
     clc
     adc tmp1
     sta paceFrac,x           ; el acarreo de esta suma es lo que se usa abajo
     lda totalLo,x
-    adc #AIPACE_HI            ; suma AIPACE_HI + el acarreo de paceFrac
+    adc tmp2                 ; parte entera + el acarreo de paceFrac
     sta totalLo,x
     lda totalHi,x
     adc #0
@@ -1867,6 +2628,7 @@ UpdateAI:
     inx
     cpx #NUM_DRIVERS
     bne @lp
+@rts:
     rts
 
 ; Se dispara cuando el JUGADOR completa una vuelta (no el de cada IA por
@@ -2454,21 +3216,21 @@ BuildOAM:
 ; --- HUD fila 1 (Y=8): V n / 3      y    velocidad
 BuildHud1:
     lda #'V'
-    ldx #16
+    ldx #HUD_X
     ldy #8
     jsr PutChar
     lda lapNum
     clc
     adc #'0'
-    ldx #24
+    ldx #HUD_X+8
     ldy #8
     jsr PutChar
     lda #'/'
-    ldx #32
+    ldx #HUD_X+16
     ldy #8
     jsr PutChar
     lda #'0'+TOTAL_LAPS
-    ldx #40
+    ldx #HUD_X+24
     ldy #8
     jsr PutChar
 
@@ -2503,28 +3265,29 @@ BuildHud1:
     lda dig2
     clc
     adc #'0'
-    ldx #192
-    ldy #8
+    ldx #HUD_X
+    ldy #24
     jsr PutChar
     lda dig1
     clc
     adc #'0'
-    ldx #200
-    ldy #8
+    ldx #HUD_X+8
+    ldy #24
     jsr PutChar
     lda dig0
     clc
     adc #'0'
-    ldx #208
-    ldy #8
+    ldx #HUD_X+16
+    ldy #24
     jsr PutChar
     rts
 
-; --- HUD fila 2 (Y=16): posicion, "P08". Fila propia y no la de arriba
-; porque esa ya usa 7 de los 8 sprites que entran por scanline.
+; --- puesto, "P08". Cada dato en su propia fila del panel: asi ninguna
+; scanline junta mas de 6 sprites del HUD y quedan dos libres para el auto
+; que pueda caer a esa altura, sin pasarse de los 8 por linea.
 BuildHudRow2:
     lda #'P'
-    ldx #16
+    ldx #HUD_X
     ldy #16
     jsr PutChar
     lda playerPos
@@ -2535,13 +3298,13 @@ BuildHudRow2:
     lda dig1
     clc
     adc #'0'
-    ldx #24
+    ldx #HUD_X+8
     ldy #16
     jsr PutChar
     lda dig0
     clc
     adc #'0'
-    ldx #32
+    ldx #HUD_X+16
     ldy #16
     jsr PutChar
     rts
@@ -2549,14 +3312,14 @@ BuildHudRow2:
 rankY: .byte RANK_Y, RANK_Y+RANK_SEP, RANK_Y+2*RANK_SEP
 
 ; Ventana movil de 3 lineas: el que tenes adelante, vos, y el que tenes
-; atras. Es la informacion que de verdad sirve manejando -- contra quien
-; estas peleando -- y con tres lineas separadas 16 px (el doble de un tile)
-; se lee mucho mejor que las cinco apretadas de antes.
+; atras. Es la informacion que de verdad sirve manejando: contra quien estas
+; peleando.
 ;
-; Formato "P07 GAS": el separador no gasta un sprite, sale de la posicion X.
-; La linea del jugador no tiene paleta de sprite libre para resaltarse con
-; color (las 4 ya estan asignadas: jugador, rival rojo, rival plateado,
-; texto), asi que lleva un '!' adelante.
+; Formato "!07GAS", 6 sprites justos, que es lo que entra en el panel (de
+; HUD_X al borde hay 6 columnas ocultando ademas el borde con overscan). El
+; "P" de "P07" se fue: el numero solo ya se entiende, y ese sprite era el que
+; no dejaba entrar el codigo. La linea del jugador no tiene paleta libre para
+; resaltarse con color (las 4 estan asignadas), asi que lleva el '!'.
 ;
 ; En los extremos la ventana se desliza en vez de mostrar puestos que no
 ; existen: de puntero muestra P1-P2-P3 (o sea vos y los dos de atras), y de
@@ -2610,8 +3373,6 @@ BuildRankWindow:
 @mark:
     jsr RankPut
 
-    lda #'P'
-    jsr RankPut
     lda dig1
     clc
     adc #'0'
@@ -2619,8 +3380,6 @@ BuildRankWindow:
     lda dig0
     clc
     adc #'0'
-    jsr RankPut
-    lda #' '
     jsr RankPut
 
     ldx rankDrv
