@@ -1,5 +1,10 @@
-# Emulador NES headless para los tests (compila un core en C++)
-nes-py==8.2.1
-# nes-py todavia no soporta numpy 2.x
-numpy<2
+# Emulador NES headless para los tests (core real de NES compilado en C++).
+# La 9.x trae wheels precompiladas hasta Python 3.14; la 8.2.1 que estaba antes
+# solo llega hasta 3.11 y hay que compilarla a mano.
+nes-py>=9.0.1
+# La 8.2.1 no soportaba numpy 2.x. La 9.x si, asi que el pin viejo (numpy<2) ya
+# no hace falta, y encima numpy 1.x no compila en Python 3.13+.
+numpy>=2
 pillow
+
+# Verificado con: nes-py 9.0.1, numpy 2.5.1, pillow 12.3.0, Python 3.14.6
