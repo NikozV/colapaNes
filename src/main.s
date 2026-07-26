@@ -30,6 +30,7 @@ ST_END    = 2
 ST_CLASS  = 3
 ST_QUALY  = 4
 ST_GRID   = 5
+ST_PITMENU = 6
 
 PLAYER_Y  = 168
 ; GEOMETRIA DEL CIRCUITO
@@ -46,7 +47,10 @@ ROAD_L    = 48          ; borde izquierdo del asfalto (px, en coords de pista)
 ROAD_R    = 128         ; x maximo del auto para seguir entero en el asfalto
 MAXSPD_HI = 4           ; velocidad maxima (px/frame)
 LAP_LEN   = 3000        ; unidades de distancia por vuelta
-TOTAL_LAPS = 3
+; 6 y no el "10 por defecto" de las reglas: deja que las tres gomas se
+; sientan distintas (blando ~4 vueltas, duro ~11) sin triplicar el tiempo
+; real de cada corrida de test, que corre sobre el emulador de verdad.
+TOTAL_LAPS = 6
 TRACK_CC  = 12          ; columna del centro del asfalto en la recta
 CC_MIN    = 8           ; el circuito no puede correrse mas alla de estos
 CC_MAX    = 16          ; limites sin invadir la franja del panel
@@ -92,6 +96,79 @@ QTIME_NULA   = $FFFF    ; vuelta anulada o sin completar: se larga ultimo
 ; byte alto.
 QTIME_OFF    = 768
 
+; --- gomas (fase 4) ---
+; Vida util aproximada de cada compuesto en vueltas (docs/reglas-juego.md
+; seccion 5): Blando ~4, Medio ~7, Duro ~11. La tasa de desgaste por vuelta
+; sale de 100/vueltas, redondeado, mas un bonus fijo por cada evento de "al
+; limite" que haya pasado en la vuelta (ver WearTick).
+WEAR_SOFT = 25
+WEAR_MED  = 14
+WEAR_HARD = 9
+WEAR_BONUS_OFFROAD = 6     ; salirse de pista (esto YA incluye el piano, ver
+                            ; WearTick: en esta geometria el piano cae fuera
+                            ; de ROAD_L..ROAD_R igual que el pasto)
+WEAR_BONUS_CRASH   = 10
+WEAR_BONUS_BRAKE   = 5
+HARDBRAKE_SPD = 3          ; spdHi minimo para que frenar cuente como fuerte
+
+; Agarre en % segun compuesto (base) y banda de desgaste (docs/reglas-juego.md
+; seccion 5). La banda 4 (100, pinchado) usa el mismo % que el limite de pit
+; lane: pinchado equivale a manejar el resto de la carrera a paso de boxes.
+SOFT_GRIP = 100
+MED_GRIP  = 94
+HARD_GRIP = 88
+WBAND_0   = 100             ; desgaste 0-49
+WBAND_1   = 95              ; 50-74
+WBAND_2   = 88              ; 75-89
+WBAND_3   = 75              ; 90-99
+PIT_LIMIT_PCT = 60          ; limite de velocidad en el pit lane, ver mas abajo
+WBAND_4   = PIT_LIMIT_PCT   ; 100, pinchado: mismo % que el limite de boxes
+
+; --- boxes (fase 4 etapa 2) ---
+; El motor separa "distancia" (distLo/Hi, entero, marca las vueltas) de
+; "scroll visual" (rowCC/genCC, con fraccion), y no hay una fila fija del
+; circuito que corresponda siempre a la linea de largada (ver el plan de la
+; fase). Sin eso, el pit lane no se puede clavar en un punto geometrico
+; fijo: en cambio se dibuja como una VENTANA DE DISTANCIA alrededor del
+; cruce de vuelta, aproximacion valida porque una fila se genera justo
+; antes de entrar en pantalla (el desvio entre distancia y scroll es chico
+; dentro de una sola vuelta).
+PIT_ENTRY_LEN = 300      ; ventana de entrada: ultimas 300 unidades de la vuelta
+PIT_EXIT_LEN  = 150      ; ventana de salida: primeras 150 de la vuelta siguiente
+; Franja del pit lane: reemplaza el piano Y LA GRAVA del lado DERECHO
+; (e=14..17 en BuildRow, cuatro columnas) -- nunca el izquierdo, los boxes
+; son de un solo lado. Ancho a proposito: dos tiles (el piano solo) se leian
+; como el piano de siempre con otro color; cuatro se leen como un carril
+; propio, separado de la pista en vez de parte de ella. En el marco "recto"
+; de PlayerShift (el mismo que usa ROAD_L/ROAD_R) esas columnas caen en
+; [144,176): mismo calculo que BuildRow, (e+TRACK_CC-TRACK_HW)*8.
+PIT_LANE_L = (14+TRACK_CC-TRACK_HW)*8
+PIT_LANE_R = (18+TRACK_CC-TRACK_HW)*8
+PIT_CAP = MAXSPD_HI*256*PIT_LIMIT_PCT/100   ; tope de velocidad en boxes, 8.8
+PIT_PENALTY_SECS = 5     ; por pasarse del limite estando comprometido
+
+; --- boxes (fase 4 etapa 3): menu de parada y pitStopTimer ---
+; El menu se abre apenas el auto se compromete (pitCommitted, ver
+; UpdatePlayer): no hay que seguir manejando hasta un punto mas -- tocar el
+; carril alcanza, como pedirian los boxes de verdad.
+WING_STEP = 51            ; ~0.2 px/cuadro en 8.8 por punto de ala (curCapHi/Lo)
+PIT_STOP_BASE = 150       ; 2.5s a 60 cuadros/seg
+PIT_STOP_SLOW_ADD = 300   ; parada lenta: 300 + azar(0..127), ~5 a 7 segundos
+
+; --- boxes (fase 4 etapa 4): parada abstraida de la IA ---
+; La IA no maneja de verdad (es una formula de distancia, desde la fase 2),
+; asi que no tiene un modelo de gomas completo: en una vuelta al azar, ni
+; las dos primeras ni las dos ultimas (para que no se sienta ni instantanea
+; ni al final sin sentido), cada una sufre un unico evento que le resta el
+; equivalente a una parada de base de su acumulador de distancia. Sin esto
+; la regla de los dos compuestos seria injusta: el jugador pierde ~20s de
+; verdad en una parada real y la IA no perderia nada.
+PIT_STOP_LAP_COUNT = TOTAL_LAPS-4    ; vueltas validas: 3..TOTAL_LAPS-2
+; PIT_STOP_BASE(150 cuadros) * ritmo tipico de la IA (~3.5 unidades/cuadro,
+; ver teamPaceLoTab): no vale la pena un multiplicador por piloto para una
+; abstraccion que ya de por si no simula la parada real.
+AI_PITSTOP_LOSS = 525
+
 T_GRASS_A = $01
 T_GRASS_B = $02
 T_ROAD    = $03
@@ -100,6 +177,8 @@ T_CURB_A  = $05
 T_CURB_B  = $06
 T_EDGE    = $07
 T_GRAVEL  = $08
+T_PIT_A   = $09
+T_PIT_B   = $0A
 
 .segment "ZEROPAGE"
 nmiFlag:    .res 1
@@ -187,6 +266,31 @@ startRamp:  .res 1          ; cuadros que le quedan a la largada parada
 launchSpd:  .res 1          ; velocidad entera de la IA mientras acelera
 launchTick: .res 1          ; para subir launchSpd cada LAUNCH_STEP cuadros
 
+; gomas (fase 4)
+tireCompound: .res 1        ; 0=blando 1=medio 2=duro
+tireWear:     .res 1        ; 0-100
+usedMask:     .res 1        ; bit0/1/2 = compuesto usado alguna vez esta carrera
+curCapHi:     .res 1        ; tope dinamico de velocidad, 8.8 (formato de spdHi/Lo)
+curCapLo:     .res 1
+lapOffRoad:   .res 1        ; se salio de pista en algun cuadro de esta vuelta
+lapCrash:     .res 1        ; hubo un choque esta vuelta
+lapHardBrake: .res 1        ; freno fuerte a alta velocidad esta vuelta
+
+; boxes (fase 4 etapa 2)
+inPit:        .res 1        ; el auto esta AHORA sobre la franja de boxes
+pitCommitted: .res 1        ; entro a boxes esta ventana: limite de 60% el resto
+pitPenalized: .res 1        ; ya se le sumo la penalidad de esta parada
+penaltySecs:  .res 1        ; segundos de penalidad, se suman al tiempo en GoEnd
+
+; boxes (fase 4 etapa 3): menu de parada y pitStopTimer
+wingLevel:    .res 1        ; -1/0/+1, ajuste de ala (entra en RecalcCap)
+pitMenuShown: .res 1        ; ya se abrio el menu esta parada (no reabrir)
+pitCursor:    .res 1        ; 0=GOMA, 1=ALA, fila seleccionada en el menu
+menuCompound: .res 1        ; seleccion en curso (se aplica recien al confirmar)
+menuWing:     .res 1        ; 0/1/2 = -1/0/+1, idem
+pitTimerLo:   .res 1        ; cuadros que le quedan a la parada, 16 bits
+pitTimerHi:   .res 1
+
 ; Exportadas para que tools/probe.py pueda leerlas por nombre desde el emulador
 .exportzp gameState, playerX, spdLo, spdHi, distLo, distHi
 .exportzp lapNum, crashT, offRoad, scrollLo, secs, mins, finished
@@ -194,6 +298,10 @@ launchTick: .res 1          ; para subir launchSpd cada LAUNCH_STEP cuadros
 .exportzp plyTotalLo, plyTotalHi, playerPos, oamIdx, scrollNT
 .exportzp lapFrameLo, lapFrameHi, lapValid, offRoadBad, qualyLap
 .exportzp startRamp, launchSpd
+.exportzp tireCompound, tireWear, usedMask, curCapHi, curCapLo
+.exportzp inPit, pitCommitted, penaltySecs
+.exportzp wingLevel, pitMenuShown, pitCursor, menuCompound, menuWing
+.exportzp pitTimerLo, pitTimerHi
 
 .segment "OAM"
 oam:        .res 256
@@ -257,6 +365,19 @@ teamName1:  .res 11
 teamName2:  .res 11
 
 .export pilotCode0, pilotCode1, pilotCode2, pilotTeam, teamPaceLo, defBonus
+
+; Tope dinamico de velocidad (ver RecalcCap), copiado una vez desde BANK3
+; igual que la tabla de pilotos: 15 entradas, 3 compuestos x 5 bandas de
+; desgaste, indexadas como tireCompound*5 + banda.
+capTabLo:   .res 15
+capTabHi:   .res 15
+
+; Parada abstraida de la IA (fase 4 etapa 4): vuelta (3..TOTAL_LAPS-2) en la
+; que cada IA pierde AI_PITSTOP_LOSS de golpe. Se sortea una vez por
+; carrera en StartRace; PLAYER_SLOT no se usa.
+pitStopLap: .res NUM_DRIVERS
+
+.export pitStopLap
 
 ;=============================================================================
 ; MMC1
@@ -370,6 +491,15 @@ CopyPilotTable:
     inx
     cpx #11
     bne @teams
+    ldx #0
+@caps:
+    lda capTabLoTab,x
+    sta capTabLo,x
+    lda capTabHiTab,x
+    sta capTabHi,x
+    inx
+    cpx #15
+    bne @caps
     lda #0
     jsr SwitchBank
     rts
@@ -535,6 +665,48 @@ teamName0Tab: .byte "MFRMWARAHAC"
 teamName1Tab: .byte "CEBEISCUALA"
 teamName2Tab: .byte "LRRRLTBDAPD"
 
+; Tope dinamico de velocidad (curCapHi/Lo, 8.8) segun compuesto y banda de
+; desgaste. 15 valores = 3 compuestos x 5 bandas, indexados como
+; tireCompound*5 + banda (ver RecalcCap). Formula resuelta en compilacion,
+; mismo patron que teamPaceLoTab/qBaseTab: MAXSPD_HI son solo 5 valores
+; enteros (0-4), asi que calcular el porcentaje en tiempo real perderia toda
+; la resolucion (una reduccion del 12% da 3.52, que redondea a 3 -- un salto
+; grosero). En 8.8 en cambio hay 256 pasos por unidad entera.
+;
+; valor = MAXSPD_HI*256 * grip_compuesto% * grip_banda% / 10000
+capTabLoTab:
+    .byte <(MAXSPD_HI*256*SOFT_GRIP*WBAND_0/10000)   ; blando, desgaste 0-49
+    .byte <(MAXSPD_HI*256*SOFT_GRIP*WBAND_1/10000)   ; blando, 50-74
+    .byte <(MAXSPD_HI*256*SOFT_GRIP*WBAND_2/10000)   ; blando, 75-89
+    .byte <(MAXSPD_HI*256*SOFT_GRIP*WBAND_3/10000)   ; blando, 90-99
+    .byte <(MAXSPD_HI*256*SOFT_GRIP*WBAND_4/10000)   ; blando, pinchado
+    .byte <(MAXSPD_HI*256*MED_GRIP*WBAND_0/10000)    ; medio, 0-49
+    .byte <(MAXSPD_HI*256*MED_GRIP*WBAND_1/10000)    ; medio, 50-74
+    .byte <(MAXSPD_HI*256*MED_GRIP*WBAND_2/10000)    ; medio, 75-89
+    .byte <(MAXSPD_HI*256*MED_GRIP*WBAND_3/10000)    ; medio, 90-99
+    .byte <(MAXSPD_HI*256*MED_GRIP*WBAND_4/10000)    ; medio, pinchado
+    .byte <(MAXSPD_HI*256*HARD_GRIP*WBAND_0/10000)   ; duro, 0-49
+    .byte <(MAXSPD_HI*256*HARD_GRIP*WBAND_1/10000)   ; duro, 50-74
+    .byte <(MAXSPD_HI*256*HARD_GRIP*WBAND_2/10000)   ; duro, 75-89
+    .byte <(MAXSPD_HI*256*HARD_GRIP*WBAND_3/10000)   ; duro, 90-99
+    .byte <(MAXSPD_HI*256*HARD_GRIP*WBAND_4/10000)   ; duro, pinchado
+capTabHiTab:
+    .byte >(MAXSPD_HI*256*SOFT_GRIP*WBAND_0/10000)
+    .byte >(MAXSPD_HI*256*SOFT_GRIP*WBAND_1/10000)
+    .byte >(MAXSPD_HI*256*SOFT_GRIP*WBAND_2/10000)
+    .byte >(MAXSPD_HI*256*SOFT_GRIP*WBAND_3/10000)
+    .byte >(MAXSPD_HI*256*SOFT_GRIP*WBAND_4/10000)
+    .byte >(MAXSPD_HI*256*MED_GRIP*WBAND_0/10000)
+    .byte >(MAXSPD_HI*256*MED_GRIP*WBAND_1/10000)
+    .byte >(MAXSPD_HI*256*MED_GRIP*WBAND_2/10000)
+    .byte >(MAXSPD_HI*256*MED_GRIP*WBAND_3/10000)
+    .byte >(MAXSPD_HI*256*MED_GRIP*WBAND_4/10000)
+    .byte >(MAXSPD_HI*256*HARD_GRIP*WBAND_0/10000)
+    .byte >(MAXSPD_HI*256*HARD_GRIP*WBAND_1/10000)
+    .byte >(MAXSPD_HI*256*HARD_GRIP*WBAND_2/10000)
+    .byte >(MAXSPD_HI*256*HARD_GRIP*WBAND_3/10000)
+    .byte >(MAXSPD_HI*256*HARD_GRIP*WBAND_4/10000)
+
 ;=============================================================================
 .segment "CODE"
 
@@ -613,6 +785,10 @@ main:
 :   cmp #ST_GRID
     bne :+
     jsr GridLogic
+    jmp main
+:   cmp #ST_PITMENU
+    bne :+
+    jsr PitMenuLogic
     jmp main
 :   jsr EndLogic
     jmp main
@@ -981,6 +1157,24 @@ GoQualy:
     sta qualyLap             ; 1 = vuelta de salida
     sta lapValid
 
+    ; en la qualy no hay eleccion de compuesto todavia (llega en StartRace):
+    ; se corre con gomas nuevas, tope de velocidad completo.
+    lda #0
+    sta tireCompound
+    sta tireWear
+    sta lapOffRoad
+    sta lapCrash
+    sta lapHardBrake
+    sta inPit
+    sta pitCommitted
+    sta pitPenalized
+    sta penaltySecs
+    sta wingLevel
+    sta pitMenuShown
+    sta pitTimerLo
+    sta pitTimerHi
+    jsr RecalcCap
+
     lda #ST_QUALY
     sta gameState
     jsr RenderOn
@@ -1314,6 +1508,8 @@ gridtxt: .byte "PARRILLA", 0
 GoGrid:
     jsr RenderOff
     jsr SilenceEngine
+    lda #1
+    sta tireCompound         ; arranca en MEDIO; LEFT/RIGHT lo cambia (GridLogic)
     ; UpdateTrack corre antes que QualyDistance en el mismo cuadro, asi que
     ; puede haber dejado una fila del circuito esperando: si no se descarta,
     ; el NMI la escribe encima de la parrilla recien dibujada.
@@ -1460,6 +1656,8 @@ GoGrid:
     inx
     bne :-
 
+    jsr DrawGomaLine
+
     lda #0
     sta scrollLo
     sta scrollNT
@@ -1468,7 +1666,62 @@ GoGrid:
     jsr RenderOn
     rts
 
+; Redibuja la linea de eleccion de compuesto (fila 27: las 22 de la parrilla
+; ocupan la 4-25, asi que queda libre). Necesita el rendering apagado -- se
+; llama con RenderOff ya puesto (GoGrid) o lo pone GridLogic antes de
+; llamarla, porque escribir a PPUDATA con el rendering prendido corrompe la
+; pantalla (ver CLAUDE.md).
+gomaBlando: .byte "GOMA: BLANDO", 0
+gomaMedio:  .byte "GOMA: MEDIO ", 0
+gomaDuro:   .byte "GOMA: DURO  ", 0
+gomaPtrLo: .byte <gomaBlando, <gomaMedio, <gomaDuro
+gomaPtrHi: .byte >gomaBlando, >gomaMedio, >gomaDuro
+
+DrawGomaLine:
+    lda #27
+    jsr SetClassAddr
+    lda tmp3
+    clc
+    adc #4
+    sta tmp3
+    ldx tireCompound
+    lda gomaPtrLo,x
+    sta ptr
+    lda gomaPtrHi,x
+    sta ptr+1
+    jsr DrawText
+    rts
+
 GridLogic:
+    lda padNew
+    and #BTN_LEFT
+    beq @noleft
+    lda tireCompound
+    bne @dec
+    lda #2
+    sta tireCompound
+    jmp @redrawgoma
+@dec:
+    dec tireCompound
+    jmp @redrawgoma
+@noleft:
+    lda padNew
+    and #BTN_RIGHT
+    beq @noright
+    lda tireCompound
+    cmp #2
+    bne @inc
+    lda #0
+    sta tireCompound
+    jmp @redrawgoma
+@inc:
+    inc tireCompound
+@redrawgoma:
+    jsr Blip
+    jsr RenderOff
+    jsr DrawGomaLine
+    jsr RenderOn
+@noright:
     lda padNew
     and #BTN_START
     beq :+
@@ -1509,6 +1762,37 @@ StartRace:
     lda #0
     sta scrollLo
     sta scrollNT
+
+    ; gomas: tireCompound ya viene elegido en la parrilla (GridLogic). Marca
+    ; ese compuesto como usado (regla de los dos compuestos, ver GoEnd) y
+    ; calcula el tope de velocidad inicial.
+    lda #0
+    sta tireWear
+    sta lapOffRoad
+    sta lapCrash
+    sta lapHardBrake
+    lda #1
+    ldx tireCompound
+    beq @gotbit
+@shl:
+    asl a
+    dex
+    bne @shl
+@gotbit:
+    sta usedMask
+    jsr RecalcCap
+
+    ; boxes
+    lda #0
+    sta inPit
+    sta pitCommitted
+    sta pitPenalized
+    sta penaltySecs
+    sta wingLevel
+    sta pitMenuShown
+    sta pitTimerLo
+    sta pitTimerHi
+    jsr AssignAIPitLaps
 
     ; --- la parrilla ---
     ; Se larga desde el puesto que salio de la qualy: orderTable ya viene
@@ -1643,12 +1927,36 @@ RedrawTrack:
 RaceLogic:
     lda padNew
     and #BTN_SEL
-    beq @norm
+    beq @nosel
     jsr EnterClass           ; SELECT: pausa y muestra la clasificacion
+    rts
+@nosel:
+    ; boxes: apenas el auto se compromete (pitCommitted, ver UpdatePlayer)
+    ; el menu se abre solo, una vez por parada -- tocar el carril alcanza,
+    ; no hace falta seguir manejando hasta un punto mas.
+    lda pitCommitted
+    beq @norm
+    lda pitMenuShown
+    bne @norm
+    lda #1
+    sta pitMenuShown
+    jsr EnterPitMenu
     rts
 @norm:
     jsr UpdateTimer
+    lda pitTimerHi
+    ora pitTimerLo
+    beq @drive
+    ; parado en el box: sin control ni velocidad, pero la IA sigue
+    ; corriendo -- por eso duele de verdad perder puesto durante la parada.
+    lda #0
+    sta spdHi
+    sta spdLo
+    jsr DecPitTimer
+    jmp @aicontinue
+@drive:
     jsr UpdatePlayer
+@aicontinue:
     jsr UpdateScroll
     jsr UpdateTrack
     jsr UpdateDistance
@@ -1659,7 +1967,11 @@ RaceLogic:
     ; distancias de este cuadro) y ANTES de CheckCollisions y BuildOAM, que
     ; son las dos que consumen la lista de autos en pantalla.
     jsr BuildCars
+    lda pitTimerHi
+    ora pitTimerLo
+    bne @nocol                ; parado en el box: no es justo que te choquen
     jsr CheckCollisions
+@nocol:
     jsr EngineSound
     jsr BuildOAM
     rts
@@ -1708,6 +2020,14 @@ UpdatePlayer:
     lda pad1
     and #BTN_B
     beq @coast
+    ; freno fuerte a alta velocidad: aproxima la frenada real sin agregar un
+    ; sensor nuevo (ver WearTick)
+    lda spdHi
+    cmp #HARDBRAKE_SPD
+    bcc @notfuerte
+    lda #1
+    sta lapHardBrake
+@notfuerte:
     ; freno
     lda spdLo
     sec
@@ -1747,14 +2067,53 @@ UpdatePlayer:
     sta spdLo
     jmp @spdok
 @onroad:
+    ; Tope dinamico por gomas (curCapHi/Lo, 8.8), recalculado por WearTick al
+    ; cerrar cada vuelta, nunca por cuadro. Reemplaza la vieja comparacion
+    ; contra la constante MAXSPD_HI.
     lda spdHi
-    cmp #MAXSPD_HI
+    cmp curCapHi
     bcc @spdok
-    lda #MAXSPD_HI
+    bne @clampcap
+    lda spdLo
+    cmp curCapLo
+    bcc @spdok
+@clampcap:
+    lda curCapHi
     sta spdHi
-    lda #0
+    lda curCapLo
     sta spdLo
 @spdok:
+
+    ; boxes: limite de velocidad aparte del de las gomas, se aplica ademas
+    ; (el mas restrictivo de los dos gana, porque los dos son clamps sobre
+    ; el mismo par spdHi/spdLo). pitCommitted es del cuadro ANTERIOR --
+    ; mismo desfasaje de un cuadro que offRoad, que se lee arriba y se
+    ; recalcula mas abajo en esta misma rutina.
+    lda pitCommitted
+    beq @nopitclamp
+    lda spdHi
+    cmp #>PIT_CAP
+    bcc @nopitclamp
+    bne @pitclampgo
+    lda spdLo
+    cmp #<PIT_CAP
+    bcc @nopitclamp
+@pitclampgo:
+    ; se excedio del limite: penalidad, una sola vez por parada
+    lda pitPenalized
+    bne @noclampsecs
+    lda #1
+    sta pitPenalized
+    lda penaltySecs
+    clc
+    adc #PIT_PENALTY_SECS
+    sta penaltySecs
+@noclampsecs:
+    lda #>PIT_CAP
+    sta spdHi
+    lda #<PIT_CAP
+    sta spdLo
+@nopitclamp:
 
     ; direccion (mas agil a mas velocidad)
     lda pad1
@@ -1811,6 +2170,7 @@ UpdatePlayer:
 @off:
     lda #1
     sta offRoad
+    sta lapOffRoad          ; se resetea en WearTick, una vez por vuelta
 
     ; Salida FRANCA, la que anula la vuelta de qualy. offRoad marca "una rueda
     ; afuera" (basta que se pase el borde del auto); la regla habla de las
@@ -1826,6 +2186,35 @@ UpdatePlayer:
     lda #1
     sta offRoadBad
 @dentro:
+    ; boxes: franja de pit lane (piano derecho durante la ventana, ver
+    ; BuildRow/PitWindowActive), en el mismo marco recto que tmp4. inPit es
+    ; del cuadro actual; pitCommitted queda prendido el resto de la ventana
+    ; apenas se toca la franja una vez (y se resetea recien cuando la
+    ; ventana termina, junto con pitPenalized).
+    jsr PitWindowActive
+    sta tmp1
+    lda #0
+    sta inPit
+    lda tmp1
+    beq @winoff
+    lda tmp4
+    cmp #PIT_LANE_L
+    bcc @rtspit
+    cmp #PIT_LANE_R
+    bcs @rtspit
+    lda #1
+    sta inPit
+    sta pitCommitted
+    lda #0
+    sta offRoad              ; el pit lane es un camino legitimo, no cuenta
+    sta offRoadBad           ; como salida de pista (ni penaliza ni desgasta)
+    jmp @rtspit
+@winoff:
+    lda #0
+    sta pitCommitted
+    sta pitPenalized
+    sta pitMenuShown
+@rtspit:
     rts
 
 ; A = Y en pantalla -> A = cuanto esta corrido el circuito a esa altura, en
@@ -1979,6 +2368,11 @@ BuildRow:
     lda genCC
     sta rowCC,x
 
+    ; ventana de boxes activa para ESTA fila? (ver PitWindowActive). Se
+    ; calcula una sola vez por fila, no por columna.
+    jsr PitWindowActive
+    sta tmp1
+
     ldx #0                  ; columna
 @col:
     txa
@@ -1991,7 +2385,7 @@ BuildRow:
     cmp #2
     bcc @curb
     cmp #2*TRACK_HW-2
-    bcs @curb
+    bcs @curbR
     cmp #TRACK_HW-1         ; la raya del medio
     bne @road
     lda genRow              ; la raya del medio va cortada
@@ -2001,6 +2395,21 @@ BuildRow:
     bne @put                ; siempre: T_DASH != 0
 @road:
     lda #T_ROAD
+    bne @put
+; piano DERECHO (e=14,15): durante la ventana de boxes es la franja de pit
+; lane en vez de piano normal (sigue en @gravelR mas abajo, e=16,17: las
+; cuatro columnas juntas). El izquierdo (e=0,1) nunca lo es: los boxes son
+; de un solo lado.
+@curbR:
+    lda tmp1
+    beq @curb
+    lda genRow
+    and #1
+    beq @pitA
+    lda #T_PIT_B
+    bne @put
+@pitA:
+    lda #T_PIT_A
     bne @put
 @curb:
     lda genRow
@@ -2017,10 +2426,25 @@ BuildRow:
 ; siguen siendo los mismos que sin grava.
 @outside:
     cmp #2*TRACK_HW+2
-    bcc @gravel             ; e = 16,17 -> grava del lado derecho
+    bcc @gravelR            ; e = 16,17 -> grava del lado derecho (o boxes)
     cmp #254
-    bcs @gravel             ; e = 254,255 (o sea -2,-1) -> grava del izquierdo
-    jmp @grass
+    bcs @gravel             ; e = 254,255 (o sea -2,-1) -> grava del izquierdo,
+    jmp @grass               ; esa nunca es pit lane: los boxes son de un lado
+; grava derecha (e=16,17): durante la ventana de boxes tambien es pit lane,
+; junto con el piano derecho (@curbR). Las cuatro columnas juntas (14-17) se
+; leen como un carril propio y ancho, no como el piano de siempre con otro
+; color -- separado de la pista, no parte de ella.
+@gravelR:
+    lda tmp1
+    beq @gravel
+    lda genRow
+    and #1
+    beq @pitgA
+    lda #T_PIT_B
+    bne @put
+@pitgA:
+    lda #T_PIT_A
+    bne @put
 @gravel:
     lda #T_GRAVEL
     bne @put
@@ -2429,6 +2853,8 @@ CheckCollisions:
 @crash:
     lda #24
     sta crashT
+    lda #1
+    sta lapCrash             ; se resetea en WearTick, una vez por vuelta
     ; perder la mitad de la velocidad
     lsr spdHi
     ror spdLo
@@ -2459,6 +2885,217 @@ CheckCollisions:
     rts
 
 ;--------------------------------------------------------------- distancia
+;=============================================================================
+; GOMAS
+;=============================================================================
+
+; tireCompound/tireWear -> curCapHi/Lo. Se llama al arrancar la carrera
+; (StartRace) y al cerrar cada vuelta (WearTick): nunca por cuadro, la banda
+; de desgaste cambia como mucho una vez por vuelta.
+RecalcCap:
+    lda tireWear
+    cmp #50
+    bcc @b0
+    lda tireWear
+    cmp #75
+    bcc @b1
+    lda tireWear
+    cmp #90
+    bcc @b2
+    lda tireWear
+    cmp #100
+    bcc @b3
+    lda #4
+    jmp @have
+@b0:
+    lda #0
+    jmp @have
+@b1:
+    lda #1
+    jmp @have
+@b2:
+    lda #2
+    jmp @have
+@b3:
+    lda #3
+@have:
+    sta tmp1                 ; banda 0-4
+    lda tireCompound
+    asl a
+    asl a                    ; *4
+    clc
+    adc tireCompound         ; *5
+    clc
+    adc tmp1                 ; + banda = indice en capTabLo/Hi
+    tax
+    lda capTabLo,x
+    sta curCapLo
+    lda capTabHi,x
+    sta curCapHi
+
+    ; ajuste de ala (etapa 3, EnterPitMenu): +1 es MAS ala, achica el tope;
+    ; -1 es MENOS ala, lo agranda. Simplificacion deliberada -- el motor no
+    ; distingue "estoy en una curva" de "estoy en una recta" (genCC se
+    ; corre continuo, sin ese evento), asi que el ala no le da mas agarre
+    ; SOLO en curva como en las reglas: es un ajuste parejo todo el tiempo.
+    lda wingLevel
+    beq @rts
+    bmi @menosala
+    lda curCapLo
+    sec
+    sbc #<WING_STEP
+    sta curCapLo
+    lda curCapHi
+    sbc #>WING_STEP
+    sta curCapHi
+    jmp @clampcap
+@menosala:
+    lda curCapLo
+    clc
+    adc #<WING_STEP
+    sta curCapLo
+    lda curCapHi
+    adc #>WING_STEP
+    sta curCapHi
+@clampcap:
+    lda curCapHi
+    bpl @rts                 ; se fue a negativo (mas ala con desgaste ya
+    lda #0                   ; alto): pisar el piso en 0, no envolver
+    sta curCapHi
+    sta curCapLo
+@rts:
+    rts
+
+; Una vez por vuelta (UpdateDistance, rama @lap). Sube tireWear segun el
+; compuesto (WEAR_SOFT/MED/HARD) mas un bonus fijo por cada evento de "al
+; limite" ocurrido en la vuelta que se cierra: salida de pista (lapOffRoad,
+; que en esta geometria ya incluye el contacto con el piano -- ver ColPal:
+; el piano cae fuera de ROAD_L..ROAD_R igual que el pasto, asi que no hace
+; falta un chequeo aparte), un choque (lapCrash) o una frenada fuerte a alta
+; velocidad (lapHardBrake). Termina recalculando el tope de velocidad.
+WearRateTab: .byte WEAR_SOFT, WEAR_MED, WEAR_HARD
+
+WearTick:
+    ldx tireCompound
+    lda WearRateTab,x
+    sta tmp1
+    lda lapOffRoad
+    beq :+
+    lda tmp1
+    clc
+    adc #WEAR_BONUS_OFFROAD
+    sta tmp1
+:   lda lapCrash
+    beq :+
+    lda tmp1
+    clc
+    adc #WEAR_BONUS_CRASH
+    sta tmp1
+:   lda lapHardBrake
+    beq :+
+    lda tmp1
+    clc
+    adc #WEAR_BONUS_BRAKE
+    sta tmp1
+:   lda tireWear
+    clc
+    adc tmp1
+    cmp #100
+    bcc :+
+    lda #100
+:   sta tireWear
+    lda #0
+    sta lapOffRoad
+    sta lapCrash
+    sta lapHardBrake
+    jmp RecalcCap             ; termina con el rts de RecalcCap
+
+;=============================================================================
+; BOXES
+;=============================================================================
+
+; A = 1 si distLo/Hi cae en la ventana de boxes (los ultimos PIT_ENTRY_LEN
+; del final de la vuelta, o los primeros PIT_EXIT_LEN de la siguiente),
+; A = 0 si no. La usan BuildRow (para dibujar la franja) y UpdatePlayer
+; (para decidir inPit/pitCommitted): una sola cuenta, no dos copias.
+PitWindowActive:
+    lda distHi
+    cmp #>(LAP_LEN-PIT_ENTRY_LEN)
+    bcc @chk2
+    bne @yes
+    lda distLo
+    cmp #<(LAP_LEN-PIT_ENTRY_LEN)
+    bcc @chk2
+@yes:
+    lda #1
+    rts
+@chk2:
+    lda distHi
+    bne @no
+    lda distLo
+    cmp #PIT_EXIT_LEN
+    bcs @no
+    lda #1
+    rts
+@no:
+    lda #0
+    rts
+
+; Sortea la vuelta de parada de cada IA (3..TOTAL_LAPS-2, ver
+; PIT_STOP_LAP_COUNT). Se llama una vez por carrera, desde StartRace.
+AssignAIPitLaps:
+    ldx #0
+@lp:
+    cpx #PLAYER_SLOT
+    beq @next
+    jsr Rand
+    lda seed
+    and #$1F                 ; achicar el rango antes de la resta repetida
+@mod:
+    cmp #PIT_STOP_LAP_COUNT
+    bcc @done
+    sec
+    sbc #PIT_STOP_LAP_COUNT
+    jmp @mod
+@done:
+    clc
+    adc #3
+    sta pitStopLap,x
+@next:
+    inx
+    cpx #NUM_DRIVERS
+    bne @lp
+    rts
+
+; Se llama en UpdateDistance, rama @lap, justo despues de "inc lapNum": a
+; cada IA cuya pitStopLap coincida con la vuelta que recien arranca le resta
+; AI_PITSTOP_LOSS de su acumulador de distancia. Como lapNum solo crece y
+; pitStopLap es fijo para toda la carrera, cada IA coincide una sola vez.
+ApplyAIPitStops:
+    ldx #0
+@lp:
+    cpx #PLAYER_SLOT
+    beq @next
+    lda pitStopLap,x
+    cmp lapNum
+    bne @next
+    sec
+    lda totalLo,x
+    sbc #<AI_PITSTOP_LOSS
+    sta totalLo,x
+    lda totalHi,x
+    sbc #>AI_PITSTOP_LOSS
+    sta totalHi,x
+    bcs @next                ; sin underflow: listo
+    lda #0                   ; se fue negativo (poca distancia acumulada
+    sta totalLo,x            ; todavia): pisar el piso en 0
+    sta totalHi,x
+@next:
+    inx
+    cpx #NUM_DRIVERS
+    bne @lp
+    rts
+
 UpdateDistance:
     lda finished
     bne @rts
@@ -2496,6 +3133,8 @@ UpdateDistance:
     sbc #>LAP_LEN
     sta distHi
     inc lapNum
+    jsr WearTick
+    jsr ApplyAIPitStops
     jsr ApplyLapVariation
     jsr Blip
     lda lapNum
@@ -2951,6 +3590,334 @@ ClassLogic:
     jsr ExitClass
 :   rts
 
+;=============================================================================
+; MENU DE PARADA (boxes, fase 4 etapa 3)
+;
+; Mismo patron que EnterClass/ClassLogic/ExitClass: pausa la carrera,
+; reusa las nametables del circuito con el rendering apagado, y al salir
+; hay que reconstruir el trazado real (RedrawTrack) porque si no el
+; circuito curvo queda roto.
+;=============================================================================
+pitmenutxt: .byte "BOXES", 0
+
+pmGoma0: .byte "  GOMA: BLANDO", 0
+pmGoma1: .byte "  GOMA: MEDIO ", 0
+pmGoma2: .byte "  GOMA: DURO  ", 0
+pmGomaPtrLo: .byte <pmGoma0, <pmGoma1, <pmGoma2
+pmGomaPtrHi: .byte >pmGoma0, >pmGoma1, >pmGoma2
+
+pmAlaM1: .byte "  ALA: -1", 0
+pmAla0:  .byte "  ALA:  0", 0
+pmAlaP1: .byte "  ALA: +1", 0
+pmAlaPtrLo: .byte <pmAlaM1, <pmAla0, <pmAlaP1
+pmAlaPtrHi: .byte >pmAlaM1, >pmAla0, >pmAlaP1
+
+pmHint: .byte "SUBE/BAJA ELIGE - START OK", 0
+
+; menuWing (0/1/2) -> wingLevel real (con signo)
+WingValTab: .byte $FF, 0, 1
+
+EnterPitMenu:
+    lda scrollLo
+    sta savedScrollLo
+    lda scrollNT
+    sta savedScrollNT
+    lda #0
+    sta scrollLo
+    sta scrollNT
+
+    jsr RenderOff
+
+    lda #<$2000
+    sta ptr
+    lda #>$2000
+    sta ptr+1
+    lda #$20
+    jsr FillNT
+
+    bit PPUSTATUS
+    lda #$23
+    sta PPUADDR
+    lda #$C0
+    sta PPUADDR
+    ldx #64
+    lda #$FF
+:   sta PPUDATA
+    dex
+    bne :-
+
+    lda #<pitmenutxt
+    sta ptr
+    lda #>pitmenutxt
+    sta ptr+1
+    lda #$2C
+    sta tmp3
+    lda #$20
+    sta tmp4
+    jsr DrawText
+
+    lda #<pmHint
+    sta ptr
+    lda #>pmHint
+    sta ptr+1
+    lda #12
+    jsr SetClassAddr
+    lda tmp3
+    clc
+    adc #1
+    sta tmp3
+    jsr DrawText
+
+    ; valores iniciales del menu = los que ya tiene el auto
+    lda tireCompound
+    sta menuCompound
+    lda wingLevel
+    beq @widx1
+    bmi @widx0
+    ldx #2
+    jmp @wdone
+@widx0:
+    ldx #0
+    jmp @wdone
+@widx1:
+    ldx #1
+@wdone:
+    stx menuWing
+    lda #0
+    sta pitCursor
+
+    jsr DrawPitMenu
+
+    ldx #0
+    lda #$FF
+:   sta oam,x
+    inx
+    bne :-
+
+    lda #ST_PITMENU
+    sta gameState
+    jsr RenderOn
+    rts
+
+; Redibuja las dos filas del menu y su cursor. Necesita el rendering
+; apagado -- EnterPitMenu ya lo deja asi, y PitMenuLogic lo apaga/prende a
+; mano alrededor de cada llamada (mismo patron que DrawGomaLine/GridLogic
+; en la parrilla).
+DrawPitMenu:
+    lda #6                   ; cursor de GOMA
+    jsr SetClassAddr
+    lda tmp3
+    clc
+    adc #5
+    sta tmp3
+    bit PPUSTATUS
+    lda tmp4
+    sta PPUADDR
+    lda tmp3
+    sta PPUADDR
+    lda pitCursor
+    bne @nogc
+    lda #'>'
+    bne @putgc
+@nogc:
+    lda #' '
+@putgc:
+    sta PPUDATA
+
+    lda #6                   ; texto de GOMA
+    jsr SetClassAddr
+    lda tmp3
+    clc
+    adc #6
+    sta tmp3
+    ldx menuCompound
+    lda pmGomaPtrLo,x
+    sta ptr
+    lda pmGomaPtrHi,x
+    sta ptr+1
+    jsr DrawText
+
+    lda #8                   ; cursor de ALA
+    jsr SetClassAddr
+    lda tmp3
+    clc
+    adc #5
+    sta tmp3
+    bit PPUSTATUS
+    lda tmp4
+    sta PPUADDR
+    lda tmp3
+    sta PPUADDR
+    lda pitCursor
+    beq @noac
+    lda #'>'
+    bne @putac
+@noac:
+    lda #' '
+@putac:
+    sta PPUDATA
+
+    lda #8                   ; texto de ALA
+    jsr SetClassAddr
+    lda tmp3
+    clc
+    adc #6
+    sta tmp3
+    ldx menuWing
+    lda pmAlaPtrLo,x
+    sta ptr
+    lda pmAlaPtrHi,x
+    sta ptr+1
+    jsr DrawText
+    rts
+
+; Sortea cuanto dura la parada: base PIT_STOP_BASE, con ~1/8 de chance de
+; una parada lenta (PIT_STOP_SLOW_ADD + azar(0..127), unos 5 a 7 segundos
+; mas). La probabilidad "chica" que piden las reglas.
+ApplyPitStop:
+    jsr Rand
+    lda seed
+    and #7
+    bne @normal
+    jsr Rand
+    lda seed
+    and #$7F
+    clc
+    adc #<PIT_STOP_SLOW_ADD
+    sta pitTimerLo
+    lda #0
+    adc #>PIT_STOP_SLOW_ADD
+    sta pitTimerHi
+    rts
+@normal:
+    lda #<PIT_STOP_BASE
+    sta pitTimerLo
+    lda #>PIT_STOP_BASE
+    sta pitTimerHi
+    rts
+
+; Resta 1 a pitTimerLo/Hi (16 bits). Se llama una vez por cuadro mientras
+; la parada dura, nunca lo deja bajar de 0 porque RaceLogic corta el
+; llamado apenas llega.
+DecPitTimer:
+    lda pitTimerLo
+    bne @lo
+    dec pitTimerHi
+@lo:
+    dec pitTimerLo
+    rts
+
+ExitPitMenu:
+    ; aplicar la goma elegida: gomas nuevas, se resetea el desgaste y se
+    ; marca el compuesto como usado (regla de los dos compuestos)
+    lda menuCompound
+    sta tireCompound
+    lda #0
+    sta tireWear
+    lda #1
+    ldx tireCompound
+    beq @gotbit
+@shl:
+    asl a
+    dex
+    bne @shl
+@gotbit:
+    ora usedMask
+    sta usedMask
+    ; aplicar el ala
+    ldx menuWing
+    lda WingValTab,x
+    sta wingLevel
+    jsr RecalcCap
+    jsr ApplyPitStop
+
+    jsr RenderOff
+    jsr RedrawTrack
+    lda savedScrollLo
+    sta scrollLo
+    lda savedScrollNT
+    sta scrollNT
+    lda #ST_RACE
+    sta gameState
+    jsr RenderOn
+    rts
+
+PitMenuLogic:
+    lda padNew
+    and #BTN_UP
+    beq @nodown
+    lda pitCursor
+    eor #1
+    sta pitCursor
+    jmp @redraw
+@nodown:
+    lda padNew
+    and #BTN_DOWN
+    beq @noup
+    lda pitCursor
+    eor #1
+    sta pitCursor
+    jmp @redraw
+@noup:
+    lda padNew
+    and #BTN_LEFT
+    beq @noleft
+    lda pitCursor
+    bne @alaleft
+    lda menuCompound
+    bne @gdec
+    lda #2
+    sta menuCompound
+    jmp @redraw
+@gdec:
+    dec menuCompound
+    jmp @redraw
+@alaleft:
+    lda menuWing
+    bne @wdec
+    lda #2
+    sta menuWing
+    jmp @redraw
+@wdec:
+    dec menuWing
+    jmp @redraw
+@noleft:
+    lda padNew
+    and #BTN_RIGHT
+    beq @noright
+    lda pitCursor
+    bne @alaright
+    lda menuCompound
+    cmp #2
+    bne @ginc
+    lda #0
+    sta menuCompound
+    jmp @redraw
+@ginc:
+    inc menuCompound
+    jmp @redraw
+@alaright:
+    lda menuWing
+    cmp #2
+    bne @winc
+    lda #0
+    sta menuWing
+    jmp @redraw
+@winc:
+    inc menuWing
+@redraw:
+    jsr Blip
+    jsr RenderOff
+    jsr DrawPitMenu
+    jsr RenderOn
+@noright:
+    lda padNew
+    and #BTN_START
+    beq :+
+    jsr Blip
+    jsr ExitPitMenu
+:   rts
+
 ; A = fila de tiles (0..29) -> tmp3/tmp4 = direccion PPU. Siempre en la
 ; nametable de arriba: esta pantalla no scrollea.
 SetClassAddr:
@@ -3087,6 +4054,25 @@ GoEnd:
     cpx #4
     bne @txt
 
+    ; boxes: sumar las penalidades (exceder el limite del pit lane) antes de
+    ; mostrar el tiempo, no despues -- mins/secs tienen que reflejarlas.
+    lda penaltySecs
+    beq @nopenalty
+    lda secs
+    clc
+    adc penaltySecs
+    sta secs
+@wrapmin:
+    lda secs
+    cmp #60
+    bcc @nopenalty
+    sec
+    sbc #60
+    sta secs
+    inc mins
+    jmp @wrapmin
+@nopenalty:
+
     ; tiempo final: M:SS en $21EE
     bit PPUSTATUS
     lda #$21
@@ -3112,6 +4098,29 @@ GoEnd:
     clc
     adc #'0'
     sta PPUDATA
+
+    ; regla de los dos compuestos (docs/reglas-juego.md seccion 5): si
+    ; usedMask tiene un solo bit prendido, no se cumplio.
+    lda usedMask
+    cmp #1
+    beq @dq
+    cmp #2
+    beq @dq
+    cmp #4
+    beq @dq
+    jmp @nodq
+@dq:
+    bit PPUSTATUS
+    lda #$22
+    sta PPUADDR
+    lda #$46
+    sta PPUADDR
+    lda #<dqtxt
+    sta ptr
+    lda #>dqtxt
+    sta ptr+1
+    jsr DrawText
+@nodq:
 
     lda #0
     sta scrollLo
@@ -3513,7 +4522,7 @@ txt3: .byte "ALPINE  N 43", 0
 txt4: .byte "PRESS START", 0
 txt5: .byte "A ACELERA   B FRENA", 0
 txt6: .byte "IZQ/DER PARA ESQUIVAR", 0
-txt7: .byte "3 VUELTAS", 0
+txt7: .byte "6 VUELTAS", 0
 
 titlePtrLo: .byte <txt1, <txt2, <txt3, <txt7, <txt4, <txt5, <txt6
 titlePtrHi: .byte >txt1, >txt2, >txt3, >txt7, >txt4, >txt5, >txt6
@@ -3525,6 +4534,7 @@ etxt1: .byte "FIN DE CARRERA", 0
 etxt2: .byte "COLAPINTO EN META", 0
 etxt3: .byte "TIEMPO", 0
 etxt4: .byte "PRESS START", 0
+dqtxt: .byte "DESCALIFICADO: 1 GOMA", 0
 
 endPtrLo: .byte <etxt1, <etxt2, <etxt3, <etxt4
 endPtrHi: .byte >etxt1, >etxt2, >etxt3, >etxt4

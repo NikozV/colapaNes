@@ -94,7 +94,11 @@ colarse en Q3 y un McLaren puede arruinarla. El margen recomendado es chico
 Largás **desde el puesto que sacaste en la qualy**. Ese es el punto de todo el
 sistema: la qualy tiene consecuencia directa.
 
-- Distancia: 10 vueltas por defecto (parámetro `TOTAL_LAPS`).
+- Distancia: 10 vueltas por defecto (parámetro `TOTAL_LAPS`). **Implementado
+  en 6** (fase 4): con 3 no daba tiempo a que las tres gomas se sintieran
+  distintas (el duro rinde ~11 vueltas) ni a que la ventana de estrategia de
+  paradas existiera, pero 10 triplica el tiempo real de cada corrida de test
+  sobre el emulador. Sigue siendo un parámetro tuneable.
 - Largada parado con semáforo. Adelantarse = penalización de 5 segundos que se
   suma al tiempo final.
 - Las posiciones se calculan por **distancia total recorrida** (vuelta actual ×
@@ -138,6 +142,20 @@ vuelta en llegar a temperatura. Durante ese tiempo, agarre reducido.
 compuestos distintos. Si terminás sin cumplirla, descalificado. Esto obliga a
 parar al menos una vez y es lo que hace que exista la estrategia.
 
+**HECHA (fase 4).** El agarre por compuesto y por banda de desgaste está
+implementado tal cual la tabla de arriba (`SOFT_GRIP`/`MED_GRIP`/`HARD_GRIP`
+y `WBAND_0`-`WBAND_4` en `src/main.s`), como un tope de velocidad dinámico
+en punto fijo 8.8 (`curCapHi/Lo`), recalculado por tabla precalculada en
+compilación cada vez que cambia el compuesto o el desgaste cruza de banda —
+nunca por cuadro. El desgaste sube más rápido por salida de pista (que en
+esta geometría ya incluye rozar el piano, ver `CLAUDE.md`), choque o frenada
+fuerte a alta velocidad.
+
+Lo que **no** entró: la **temperatura** (gomas frías una vuelta después de
+la parada) y el desgaste extra por descargar el turbo a fondo, porque
+depende del ERS (fase 5), que todavía no existe — misma dependencia que ya
+tenían las curvas antes de la fase 1.
+
 ## 6. Boxes
 
 **Entrada**: carril a la derecha, señalizado unos metros antes de la línea.
@@ -163,6 +181,45 @@ lane, una parada cuesta unos 20 segundos.
 
 **Doble parada**: permitida, y a veces es la estrategia correcta si se te
 destruyen las gomas.
+
+**HECHA (fase 4), con una simplificación grande en la geometría.** El motor
+separa "distancia" (`distLo/Hi`, entero, marca las vueltas) de "scroll
+visual" (con fracción), y no hay una fila fija del circuito que corresponda
+siempre a la línea de largada — clavar el pit lane en un punto geométrico
+exacto del trazado hubiera exigido unificar esas dos escalas, un cambio de
+arquitectura mucho mayor que esta fase. En cambio el pit lane es una
+**ventana de distancia** alrededor de cada cruce de vuelta (`PitWindowActive`
+en `src/main.s`): se abre en los últimos 300 unidades de la vuelta y los
+primeros 150 de la siguiente, y funciona porque una fila del circuito se
+genera justo antes de entrar en pantalla, así que el desvío entre distancia
+y scroll es chico dentro de una sola vuelta. No hay "punto de entrada" que
+te puedas pasar de largo: el carril está disponible durante toda la
+ventana.
+
+El carril mismo ocupa piano y grava del lado derecho (cuatro columnas, no
+dos) para leerse como un camino propio y no como una variante del piano de
+siempre — se probó con dos tiles primero y, jugándolo, se confundía con el
+borde de pista. Tocarlo compromete al auto (`pitCommitted`) al 60% de
+velocidad el resto de la ventana y **abre el menú de inmediato**, sin punto
+intermedio: entrar a boxes de verdad significa parar ahí mismo, no seguir
+manejando hasta encontrar el box.
+
+El menú (`EnterPitMenu`/`PitMenuLogic`/`ExitPitMenu`) reusa el patrón de la
+clasificación (pantalla pausada, mismas nametables, `RedrawTrack` al salir):
+ARRIBA/ABAJO mueve el cursor entre GOMA y ALA, IZQUIERDA/DERECHA cambia el
+valor, START confirma. El ala se implementó como un ajuste directo y chico
+del tope de velocidad (`WING_STEP` en `curCapHi/Lo`) en vez del matiz "más
+agarre solo en curva" de la regla: el motor no distingue "estoy en una
+curva" de "estoy en una recta" (`genCC` se corre continuo, sin ese evento),
+así que modelarlo de verdad exigiría esa detección primero.
+
+Mientras dura la parada (`pitTimerLo/Hi`, en cuadros) el jugador no tiene
+control y el auto no se mueve, pero la IA sigue corriendo — es lo que hace
+que perder puesto durante la parada duela de verdad, igual que en una
+carrera real. La IA misma no para de verdad (sigue siendo una fórmula de
+distancia, desde la fase 2): cada una sortea una única vuelta intermedia y
+en ese cruce pierde de golpe el equivalente a una parada de base, para que
+la regla de los dos compuestos no sea injusta contra el jugador.
 
 ## 7. Turbo / Energía (ERS)
 
@@ -367,8 +424,14 @@ la qualy acababa de decidir. Ahora la IA acelera con la misma curva que el
 jugador (`launchSpd`, sin su fracción de ritmo): la diferencia en la largada
 quedó en un puesto.
 
-**Fase 4 — Gomas y boxes.** Desgaste, compuestos, entrada al pit lane, menú de
-parada, regla de los dos compuestos, penalizaciones.
+**Fase 4 — Gomas y boxes. HECHA.** Detalle completo en las secciones 5 y 6.
+En cuatro etapas dentro de la misma rama, cada una verificada con
+`make test` antes de la siguiente: gomas (compuestos, desgaste, tope
+dinámico, regla de los dos compuestos, selección en la parrilla); geometría
+del pit lane (ventana de distancia, límite de velocidad, penalización);
+menú de parada (`pitStopTimer`, ala); parada abstraída de la IA. Quedó
+afuera la temperatura de las gomas (depende del ERS, fase 5) y el semáforo
+de largada con su penalización (roadmap, no depende de nada de esta fase).
 
 **Fase 5 — ERS.** Carga en curvas y frenadas, descarga por botón, uso
 defensivo de la IA, interacción con el desgaste.

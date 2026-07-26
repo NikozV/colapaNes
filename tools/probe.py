@@ -12,8 +12,9 @@ el cambio por bueno. Un bug de 6502 casi nunca se ve leyendo el codigo.
 import sys
 sys.path.insert(0, __file__.rsplit('/', 1)[0])
 
-from nes_harness import (Game, A, B, LEFT, RIGHT, START, SELECT,
-                         ST_TITLE, ST_RACE, ST_END, ST_CLASS, ST_QUALY, ST_GRID)
+from nes_harness import (Game, A, B, LEFT, RIGHT, UP, DOWN, START, SELECT,
+                         ST_TITLE, ST_RACE, ST_END, ST_CLASS, ST_QUALY, ST_GRID,
+                         ST_PITMENU)
 
 fails = []
 
@@ -415,27 +416,43 @@ print('\n== Salirse de la pista ==')
 # desde aca arranca su propio fin de semana.
 g = Game()
 g.start_race()
+# Alejarse de la ventana de boxes de la salida (dist < PIT_EXIT_LEN) antes
+# de manejar para cualquier lado: si el barrido de mas abajo llega a pisar
+# la franja de boxes mientras la ventana esta activa, se abre el menu de
+# parada (fase 4 etapa 3) y el auto queda pausado ahi, sin llegar nunca al
+# pasto. Este bloque no prueba boxes -- eso esta en su propia seccion --
+# asi que se saca de la ventana primero, siguiendo el asfalto derecho.
+g.drive(200)
 
 # Con el circuito curvo el borde ya no esta en una X fija. El test recalcula
 # el borde igual que el juego y verifica que offRoad coincida cuadro a cuadro.
 ROAD_L, ROAD_R = 48, 128   # ver ROAD_L/ROAD_R en src/main.s (pista angosta)
-
-
-def espera_offroad(g, top_antes):
-    cc = g.peek(CC_BASE + (top_antes + PLAYER_ROW) % 60)
-    x = g.peek('playerX') - (cc - TRACK_CC) * 8
-    return 0 if ROAD_L <= x <= ROAD_R else 1
-
+# El pit lane (fase 4 etapa 2) es una excepcion: mientras la ventana de
+# distancia esta activa Y el auto esta AHORA sobre esa franja, no cuenta
+# como offRoad (ver UpdatePlayer, el bloque de @dentro). "pitCommitted"
+# (sticky el resto de la ventana) solo afecta el tope de velocidad, no
+# esto: si te vas de la franja angosta del pit lane hacia el pasto de al
+# lado, eso si es offRoad de verdad.
+LAP_LEN = 3000
+PIT_ENTRY_LEN, PIT_EXIT_LEN = 300, 150
+PIT_LANE_L, PIT_LANE_R = 144, 176   # ver PIT_LANE_L/R en src/main.s
 
 mal, vistos = 0, set()
+dist_antes = g.peek('distHi') * 256 + g.peek('distLo')
 for i in range(600):
-    # UpdatePlayer corre antes que UpdateTrack, asi que usa el topRow anterior
+    # UpdatePlayer corre antes que UpdateTrack/UpdateDistance, asi que usa
+    # el topRow y la distancia de ANTES de este cuadro.
     top_antes = g.peek('topRow')
     g.run(1, A | (LEFT if (i // 75) % 2 == 0 else RIGHT))
-    e = espera_offroad(g, top_antes)
+    cc = g.peek(CC_BASE + (top_antes + PLAYER_ROW) % 60)
+    x = g.peek('playerX') - (cc - TRACK_CC) * 8
+    ventana = dist_antes >= LAP_LEN - PIT_ENTRY_LEN or dist_antes < PIT_EXIT_LEN
+    en_boxes = ventana and PIT_LANE_L <= x < PIT_LANE_R
+    e = 0 if en_boxes else (0 if ROAD_L <= x <= ROAD_R else 1)
     vistos.add(e)
     if g.peek('offRoad') != e:
         mal += 1
+    dist_antes = g.peek('distHi') * 256 + g.peek('distLo')
 check(mal == 0, f'offRoad sigue el borde del asfalto curvado ({mal} cuadros mal de 600)')
 check(vistos == {0, 1}, f'el barrido paso por dentro y por fuera de la pista {sorted(vistos)}')
 
@@ -470,17 +487,262 @@ for _ in range(600):
         break
 check(g.peek('offRoad') == 0, 'volviendo al asfalto se despenaliza')
 
+print('\n== Gomas ==')
+g = Game()
+g.do_qualy()
+check(g.peek('tireCompound') == 1, f"la parrilla arranca en MEDIO ({g.peek('tireCompound')})")
+g.press(RIGHT)
+g.run(5)
+check(g.peek('tireCompound') == 2, f"RIGHT cambia a DURO ({g.peek('tireCompound')})")
+g.press(RIGHT)
+g.run(5)
+check(g.peek('tireCompound') == 0, f"RIGHT desde DURO da la vuelta a BLANDO ({g.peek('tireCompound')})")
+g.press(LEFT)
+g.run(5)
+check(g.peek('tireCompound') == 2, f"LEFT desde BLANDO da la vuelta a DURO ({g.peek('tireCompound')})")
+
+g.press(START)
+g.run(5)
+check(g.state == ST_RACE, 'START larga con el compuesto elegido')
+check(g.peek('tireCompound') == 2, 'el compuesto elegido en la parrilla llega a la carrera')
+check(g.peek('usedMask') == 0b100, f"usedMask marca el compuesto de partida (usedMask={g.peek('usedMask')})")
+check(g.peek('tireWear') == 0, 'las gomas arrancan sin desgaste')
+
+# tope dinamico = MAXSPD_HI*256 * grip_compuesto% * grip_banda% / 10000,
+# mismo calculo que capTabLoTab/capTabHiTab en src/main.s (banda 0, DURO).
+MAXSPD_HI, HARD_GRIP, WBAND_0 = 4, 88, 100
+cap_esperado = MAXSPD_HI * 256 * HARD_GRIP * WBAND_0 // 10000
+cap_hi, cap_lo = g.peek('curCapHi'), g.peek('curCapLo')
+check(cap_hi * 256 + cap_lo == cap_esperado,
+      f"el tope dinamico sale de la tabla (DURO banda 0 = {cap_hi}.{cap_lo}, "
+      f"esperado {cap_esperado >> 8}.{cap_esperado & 0xFF})")
+
+# manejar solo con A (sin seguir el asfalto) para salirse de pista y
+# acumular desgaste por eso, hasta cerrar una vuelta
+wear_antes = g.peek('tireWear')
+lap_antes = g.peek('lapNum')
+for _ in range(2000):
+    g.run(1, A)
+    if g.peek('lapNum') != lap_antes:
+        break
+wear_despues = g.peek('tireWear')
+check(wear_despues > wear_antes, f"el desgaste sube al cerrar una vuelta ({wear_antes} -> {wear_despues})")
+
+# banda 0 es 0-49: una sola vuelta no alcanza para cruzarla (arriba dio 19),
+# asi que el tope todavia no baja. Seguir unas vueltas mas hasta cruzar de
+# banda y ahi si verificar que el tope baja con el desgaste.
+for _ in range(6000):
+    g.run(1, A)
+    if g.peek('tireWear') >= 50:
+        break
+check(g.peek('tireWear') >= 50, f"el desgaste sigue subiendo con mas vueltas (wear={g.peek('tireWear')})")
+check(g.peek('curCapHi') * 256 + g.peek('curCapLo') < cap_esperado,
+      'el tope de velocidad baja junto con el desgaste')
+
+# en pista (offRoad=0) la velocidad nunca supera el tope dinamico vigente;
+# fuera de pista rige el limite mas estricto que ya prueba 'Salirse de la
+# pista', asi que esos cuadros se saltean aca.
+mal = 0
+for _ in range(300):
+    g.run(1, A)
+    if g.peek('offRoad'):
+        continue
+    spd = g.peek('spdHi') * 256 + g.peek('spdLo')
+    cap = g.peek('curCapHi') * 256 + g.peek('curCapLo')
+    if spd > cap:
+        mal += 1
+check(mal == 0, f"en pista la velocidad nunca supera el tope dinamico ({mal} cuadros mal)")
+
+# regla de los dos compuestos: sin el menu de boxes para cambiar de goma
+# (todavia no existe, llega en la etapa 3), usedMask se queda con un solo
+# bit prendido toda la carrera -- la condicion que GoEnd usa para
+# descalificar. La pantalla en si (texto "DESCALIFICADO: 1 GOMA" vs "PRESS
+# START") se verifico a ojo con capturas (make shots), forzando usedMask
+# con y sin un segundo compuesto.
+check(bin(g.peek('usedMask')).count('1') == 1,
+      f"sin poder cambiar de goma, usedMask se queda en un solo compuesto (usedMask={g.peek('usedMask')})")
+
+print('\n== Boxes (pit lane) ==')
+g = Game()
+g.start_race()
+# el auto arranca en la parrilla con distancia ~0: la ventana de boxes
+# (dist < PIT_EXIT_LEN) ya esta activa desde el primer cuadro, asi que
+# alcanza con dirigirse a la franja (columnas de piano derecho) mientras el
+# circuito todavia va derecho.
+PIT_LANE_L, PIT_LANE_R = 144, 176   # ver PIT_LANE_L/R en src/main.s
+PIT_CAP = 4 * 256 * 60 // 100       # MAXSPD_HI*256*PIT_LIMIT_PCT/100
+PIT_PENALTY_SECS = 5
+centro_boxes = (PIT_LANE_L + PIT_LANE_R) // 2
+
+entro = False
+for _ in range(200):
+    g.drive(1, target=centro_boxes)
+    if g.peek('inPit'):
+        entro = True
+        break
+check(entro, 'el auto entra a boxes al meterse en la franja durante la ventana')
+check(g.peek('pitCommitted') == 1, 'queda comprometido apenas toca la franja')
+check(g.peek('offRoad') == 0, 'estar en boxes no cuenta como salida de pista')
+
+# El menu se abre AUTOMATICO al cuadro siguiente de comprometerse (ver
+# RaceLogic): no hay margen para manejar a fondo por el carril antes de
+# eso, asi que el limite de velocidad + penalidad de boxes se prueban
+# DESPUES de la parada, cuando el control vuelve (el auto no avanzo nada
+# mientras estuvo parado, asi que sigue physicamente sobre el carril).
+g.run(5, 0)             # soltar todo, que PitMenuLogic lea flancos limpios
+g.press(START)          # confirmar con lo que ya estaba elegido
+g.run(5)
+assert g.state == ST_RACE, f"no salio del menu (state={g.state})"
+while g.peek('pitTimerHi') or g.peek('pitTimerLo'):
+    g.run(1, A)
+check(g.peek('pitCommitted') == 1,
+      'sigue comprometido al salir de la parada, dentro de la misma ventana')
+
+mal = 0
+for _ in range(60):
+    g.run(1, A)
+    spd = g.peek('spdHi') * 256 + g.peek('spdLo')
+    if spd > PIT_CAP:
+        mal += 1
+check(mal == 0, f'el limite de boxes clampea la velocidad al salir ({mal} cuadros por encima)')
+check(g.peek('penaltySecs') >= PIT_PENALTY_SECS,
+      f"pasarse del limite al salir de boxes suma una penalidad (penaltySecs={g.peek('penaltySecs')})")
+
+print('\n== Menu de parada ==')
+g = Game()
+g.start_race()
+entro_menu = False
+for _ in range(200):
+    g.drive(1, target=centro_boxes)
+    if g.state == ST_PITMENU:
+        entro_menu = True
+        break
+check(entro_menu, 'tocar el carril de boxes abre el menu, sin manejar mas alla')
+check(g.peek('menuCompound') == g.peek('tireCompound'),
+      'el menu arranca mostrando el compuesto actual')
+
+# el drive() que llevo hasta el menu puede haber dejado RIGHT sostenido: sin
+# soltarlo primero, PitMenuLogic (que lee flancos, padNew) no ve un apriete
+# nuevo en el primer press() de aca abajo.
+g.run(5, 0)
+
+goma_antes = g.peek('menuCompound')
+g.press(RIGHT)
+g.run(3)
+check(g.peek('menuCompound') != goma_antes, 'RIGHT en GOMA cambia la seleccion')
+
+g.press(DOWN)
+g.run(3)
+check(g.peek('pitCursor') == 1, 'ARRIBA/ABAJO mueve el cursor a ALA')
+
+ala_antes = g.peek('menuWing')
+g.press(RIGHT)
+g.run(3)
+check(g.peek('menuWing') != ala_antes, 'RIGHT en ALA cambia la seleccion')
+
+goma_elegida = g.peek('menuCompound')
+ala_elegida = g.peek('menuWing')
+mask_antes = g.peek('usedMask')
+g.press(START)
+g.run(5)
+check(g.state == ST_RACE, 'START confirma y vuelve a la carrera')
+check(g.peek('tireCompound') == goma_elegida, 'se aplica el compuesto elegido')
+check(g.peek('tireWear') == 0, 'las gomas nuevas arrancan sin desgaste')
+check(g.peek('usedMask') == mask_antes | (1 << goma_elegida),
+      'usedMask suma el compuesto nuevo (para la regla de los dos compuestos)')
+wing_esperado = {0: 0xFF, 1: 0, 2: 1}[ala_elegida]
+check(g.peek('wingLevel') == wing_esperado, 'se aplica el ala elegida')
+check(g.peek('pitTimerLo') + g.peek('pitTimerHi') * 256 > 0,
+      'arranca el cronometro de la parada (pitStopTimer)')
+
+# mientras dura la parada: el auto no se mueve pero la IA si, asi que el
+# puesto empeora -- es lo que hace que la parada duela de verdad.
+pos_antes = g.peek('playerPos')
+dist_antes = g.peek('distHi') * 256 + g.peek('distLo')
+mal_spd, vio_parar = 0, False
+for _ in range(200):
+    g.run(1, A | RIGHT)   # a fondo: si el timer no lo frenara, avanzaria
+    timer = g.peek('pitTimerLo') + g.peek('pitTimerHi') * 256
+    if timer > 0:
+        vio_parar = True
+        if g.peek('spdHi') != 0 or g.peek('spdLo') != 0:
+            mal_spd += 1
+    else:
+        break
+check(vio_parar, 'el timer estuvo activo durante la parada')
+check(mal_spd == 0, f'sin control mientras dura la parada ({mal_spd} cuadros con velocidad)')
+dist_durante = g.peek('distHi') * 256 + g.peek('distLo')
+check(dist_durante == dist_antes, 'el auto no avanza mientras esta parado')
+check(g.peek('playerPos') >= pos_antes, 'el puesto no mejora mientras la IA sigue y el jugador no')
+
+# el timer llega a 0 solo y el control vuelve sin apretar nada mas
+g.run(30, A)
+check(g.peek('spdHi') > 0 or g.peek('spdLo') > 0,
+      'terminada la parada el control vuelve solo, sin boton nuevo')
+
+print('\n== Parada abstraida de la IA ==')
+g = Game()
+g.start_race()
+PLAYER_SLOT = 19
+TOTAL_LAPS = 6
+AI_PITSTOP_LOSS = 525   # ver AI_PITSTOP_LOSS en src/main.s
+pitStopLapBase = g.labels['pitStopLap']
+totalLoBase = g.labels['totalLo']
+totalHiBase = g.labels['totalHi']
+laps = [g.peek(pitStopLapBase + i) for i in range(22)]
+ia_laps = [l for i, l in enumerate(laps) if i != PLAYER_SLOT]
+check(all(3 <= l <= TOTAL_LAPS - 2 for l in ia_laps),
+      f'cada IA para en una vuelta del medio, ni las 2 primeras ni las 2 ultimas ({sorted(set(ia_laps))})')
+
+
+def total(g, d):
+    return g.peek(totalHiBase + d) * 256 + g.peek(totalLoBase + d)
+
+
+# medir, para un piloto cualquiera, cuanto avanza por vuelta -- tiene que
+# notarse un pozo justo en su vuelta de parada.
+drv = next(i for i in range(22) if i != PLAYER_SLOT)
+target_lap = laps[drv]
+deltas = {}
+last_lap = g.peek('lapNum')
+last_total = total(g, drv)
+for _ in range(20000):
+    g.run(1, A)
+    if g.peek('lapNum') != last_lap:
+        nuevo_total = total(g, drv)
+        deltas[last_lap] = nuevo_total - last_total
+        last_lap = g.peek('lapNum')
+        last_total = nuevo_total
+    if last_lap > target_lap or g.state != ST_RACE:
+        break
+# ApplyAIPitStops resta justo cuando lapNum PASA a valer target_lap (en la
+# rama @lap de UpdateDistance, junto con "inc lapNum"): el pozo aparece en
+# el delta de la vuelta ANTERIOR (la transicion hacia target_lap), no en la
+# propia target_lap.
+lap_del_pozo = target_lap - 1
+otras = [d for lap, d in deltas.items() if lap != lap_del_pozo]
+check(lap_del_pozo in deltas and otras,
+      f'se pudo medir la vuelta de parada del piloto {drv} (deltas={deltas})')
+if lap_del_pozo in deltas and otras:
+    promedio_otras = sum(otras) / len(otras)
+    check(promedio_otras - deltas[lap_del_pozo] > AI_PITSTOP_LOSS // 2,
+          f'la vuelta de parada pierde distancia de verdad '
+          f'(vuelta {lap_del_pozo}: {deltas[lap_del_pozo]}, resto: {otras})')
+
 print('\n== Vueltas y meta ==')
 g = Game()
 g.start_race()
 laps_seen = {g.peek('lapNum')}
-for _ in range(120):
+# TOTAL_LAPS=6 y manejando solo con A (sin seguir el asfalto) las gomas se
+# desgastan rapido -- con el tope de velocidad ya reducido por pinchadura,
+# terminar las 6 vueltas de esta forma tarda unos 8500 cuadros medidos.
+for _ in range(180):
     g.run(60, A)
     laps_seen.add(g.peek('lapNum'))
     if g.state == ST_END:
         break
 check(len(laps_seen) > 1, f'el contador de vueltas avanza (vio {sorted(laps_seen)})')
-check(g.state == ST_END, 'la carrera termina despues de 3 vueltas')
+check(g.state == ST_END, 'la carrera termina despues de 6 vueltas')
 check(g.peek('finished') == 1, 'queda marcada como terminada')
 check(g.screen_stats()['negro'] > 0.9, 'muestra la pantalla final')
 g.shot('test_final')

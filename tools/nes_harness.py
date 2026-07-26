@@ -34,7 +34,7 @@ RIGHT, LEFT, DOWN, UP, START, SELECT, B, A = (
 WATCH = ['gameState', 'playerX', 'spdLo', 'spdHi', 'distLo', 'distHi',
          'lapNum', 'crashT', 'offRoad', 'scrollLo', 'secs', 'mins', 'finished']
 
-ST_TITLE, ST_RACE, ST_END, ST_CLASS, ST_QUALY, ST_GRID = 0, 1, 2, 3, 4, 5
+ST_TITLE, ST_RACE, ST_END, ST_CLASS, ST_QUALY, ST_GRID, ST_PITMENU = 0, 1, 2, 3, 4, 5, 6
 
 
 def load_labels(path=LABELS):
