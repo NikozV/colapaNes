@@ -12,8 +12,9 @@ el cambio por bueno. Un bug de 6502 casi nunca se ve leyendo el codigo.
 import sys
 sys.path.insert(0, __file__.rsplit('/', 1)[0])
 
-from nes_harness import (Game, A, B, LEFT, RIGHT, START, SELECT,
-                         ST_TITLE, ST_RACE, ST_END, ST_CLASS, ST_QUALY, ST_GRID)
+from nes_harness import (Game, A, B, LEFT, RIGHT, UP, DOWN, START, SELECT,
+                         ST_TITLE, ST_RACE, ST_END, ST_CLASS, ST_QUALY, ST_GRID,
+                         ST_PITMENU)
 
 fails = []
 
@@ -415,6 +416,13 @@ print('\n== Salirse de la pista ==')
 # desde aca arranca su propio fin de semana.
 g = Game()
 g.start_race()
+# Alejarse de la ventana de boxes de la salida (dist < PIT_EXIT_LEN) antes
+# de manejar para cualquier lado: si el barrido de mas abajo llega a pisar
+# la franja de boxes mientras la ventana esta activa, se abre el menu de
+# parada (fase 4 etapa 3) y el auto queda pausado ahi, sin llegar nunca al
+# pasto. Este bloque no prueba boxes -- eso esta en su propia seccion --
+# asi que se saca de la ventana primero, siguiendo el asfalto derecho.
+g.drive(200)
 
 # Con el circuito curvo el borde ya no esta en una X fija. El test recalcula
 # el borde igual que el juego y verifica que offRoad coincida cuadro a cuadro.
@@ -595,6 +603,73 @@ g.drive(3, target=87)   # PLAYER_X0, volver al asfalto
 dist_ahora = g.peek('distHi') * 256 + g.peek('distLo')
 assert dist_ahora < 150, f"la ventana ya termino (dist={dist_ahora}), ajustar el bloque de arriba"
 check(g.peek('pitCommitted') == 1, 'sigue comprometido al volver al asfalto dentro de la ventana')
+
+print('\n== Menu de parada ==')
+g = Game()
+g.start_race()
+entro_menu = False
+for _ in range(200):
+    g.drive(1, target=centro_boxes)
+    if g.state == ST_PITMENU:
+        entro_menu = True
+        break
+check(entro_menu, 'llegar al box (PIT_BOX_DIST) abre el menu')
+check(g.peek('menuCompound') == g.peek('tireCompound'),
+      'el menu arranca mostrando el compuesto actual')
+
+goma_antes = g.peek('menuCompound')
+g.press(RIGHT)
+g.run(3)
+check(g.peek('menuCompound') != goma_antes, 'RIGHT en GOMA cambia la seleccion')
+
+g.press(DOWN)
+g.run(3)
+check(g.peek('pitCursor') == 1, 'ARRIBA/ABAJO mueve el cursor a ALA')
+
+ala_antes = g.peek('menuWing')
+g.press(RIGHT)
+g.run(3)
+check(g.peek('menuWing') != ala_antes, 'RIGHT en ALA cambia la seleccion')
+
+goma_elegida = g.peek('menuCompound')
+ala_elegida = g.peek('menuWing')
+mask_antes = g.peek('usedMask')
+g.press(START)
+g.run(5)
+check(g.state == ST_RACE, 'START confirma y vuelve a la carrera')
+check(g.peek('tireCompound') == goma_elegida, 'se aplica el compuesto elegido')
+check(g.peek('tireWear') == 0, 'las gomas nuevas arrancan sin desgaste')
+check(g.peek('usedMask') == mask_antes | (1 << goma_elegida),
+      'usedMask suma el compuesto nuevo (para la regla de los dos compuestos)')
+wing_esperado = {0: 0xFF, 1: 0, 2: 1}[ala_elegida]
+check(g.peek('wingLevel') == wing_esperado, 'se aplica el ala elegida')
+check(g.peek('pitTimerLo') + g.peek('pitTimerHi') * 256 > 0,
+      'arranca el cronometro de la parada (pitStopTimer)')
+
+# mientras dura la parada: el auto no se mueve pero la IA si, asi que el
+# puesto empeora -- es lo que hace que la parada duela de verdad.
+pos_antes = g.peek('playerPos')
+dist_antes = g.peek('distHi') * 256 + g.peek('distLo')
+mal_spd, vio_parar = 0, False
+for _ in range(200):
+    g.run(1, A | RIGHT)   # a fondo: si el timer no lo frenara, avanzaria
+    timer = g.peek('pitTimerLo') + g.peek('pitTimerHi') * 256
+    if timer > 0:
+        vio_parar = True
+        if g.peek('spdHi') != 0 or g.peek('spdLo') != 0:
+            mal_spd += 1
+    else:
+        break
+check(vio_parar, 'el timer estuvo activo durante la parada')
+check(mal_spd == 0, f'sin control mientras dura la parada ({mal_spd} cuadros con velocidad)')
+dist_durante = g.peek('distHi') * 256 + g.peek('distLo')
+check(dist_durante == dist_antes, 'el auto no avanza mientras esta parado')
+check(g.peek('playerPos') >= pos_antes, 'el puesto no mejora mientras la IA sigue y el jugador no')
+
+# el timer llega a 0 solo y el control vuelve sin apretar nada mas
+g.run(30, A)
+check(g.peek('spdHi') > 0 or g.peek('spdLo') > 0,
+      'terminada la parada el control vuelve solo, sin boton nuevo')
 
 print('\n== Vueltas y meta ==')
 g = Game()

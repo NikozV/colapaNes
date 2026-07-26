@@ -30,6 +30,7 @@ ST_END    = 2
 ST_CLASS  = 3
 ST_QUALY  = 4
 ST_GRID   = 5
+ST_PITMENU = 6
 
 PLAYER_Y  = 168
 ; GEOMETRIA DEL CIRCUITO
@@ -142,6 +143,16 @@ PIT_LANE_L = (14+TRACK_CC-TRACK_HW)*8
 PIT_LANE_R = (16+TRACK_CC-TRACK_HW)*8
 PIT_CAP = MAXSPD_HI*256*PIT_LIMIT_PCT/100   ; tope de velocidad en boxes, 8.8
 PIT_PENALTY_SECS = 5     ; por pasarse del limite estando comprometido
+
+; --- boxes (fase 4 etapa 3): menu de parada y pitStopTimer ---
+; El box esta a PIT_BOX_DIST unidades de la LINEA (ya cruzada, en la
+; ventana de salida): comparar contra PIT_EXIT_LEN excluye la ventana de
+; entrada (distancias grandes, antes de cruzar) sin necesitar un chequeo
+; aparte.
+PIT_BOX_DIST = 50
+WING_STEP = 51            ; ~0.2 px/cuadro en 8.8 por punto de ala (curCapHi/Lo)
+PIT_STOP_BASE = 150       ; 2.5s a 60 cuadros/seg
+PIT_STOP_SLOW_ADD = 300   ; parada lenta: 300 + azar(0..127), ~5 a 7 segundos
 
 T_GRASS_A = $01
 T_GRASS_B = $02
@@ -256,6 +267,15 @@ pitCommitted: .res 1        ; entro a boxes esta ventana: limite de 60% el resto
 pitPenalized: .res 1        ; ya se le sumo la penalidad de esta parada
 penaltySecs:  .res 1        ; segundos de penalidad, se suman al tiempo en GoEnd
 
+; boxes (fase 4 etapa 3): menu de parada y pitStopTimer
+wingLevel:    .res 1        ; -1/0/+1, ajuste de ala (entra en RecalcCap)
+pitMenuShown: .res 1        ; ya se abrio el menu esta parada (no reabrir)
+pitCursor:    .res 1        ; 0=GOMA, 1=ALA, fila seleccionada en el menu
+menuCompound: .res 1        ; seleccion en curso (se aplica recien al confirmar)
+menuWing:     .res 1        ; 0/1/2 = -1/0/+1, idem
+pitTimerLo:   .res 1        ; cuadros que le quedan a la parada, 16 bits
+pitTimerHi:   .res 1
+
 ; Exportadas para que tools/probe.py pueda leerlas por nombre desde el emulador
 .exportzp gameState, playerX, spdLo, spdHi, distLo, distHi
 .exportzp lapNum, crashT, offRoad, scrollLo, secs, mins, finished
@@ -265,6 +285,8 @@ penaltySecs:  .res 1        ; segundos de penalidad, se suman al tiempo en GoEnd
 .exportzp startRamp, launchSpd
 .exportzp tireCompound, tireWear, usedMask, curCapHi, curCapLo
 .exportzp inPit, pitCommitted, penaltySecs
+.exportzp wingLevel, pitMenuShown, pitCursor, menuCompound, menuWing
+.exportzp pitTimerLo, pitTimerHi
 
 .segment "OAM"
 oam:        .res 256
@@ -742,6 +764,10 @@ main:
     bne :+
     jsr GridLogic
     jmp main
+:   cmp #ST_PITMENU
+    bne :+
+    jsr PitMenuLogic
+    jmp main
 :   jsr EndLogic
     jmp main
 
@@ -1121,6 +1147,10 @@ GoQualy:
     sta pitCommitted
     sta pitPenalized
     sta penaltySecs
+    sta wingLevel
+    sta pitMenuShown
+    sta pitTimerLo
+    sta pitTimerHi
     jsr RecalcCap
 
     lda #ST_QUALY
@@ -1736,6 +1766,10 @@ StartRace:
     sta pitCommitted
     sta pitPenalized
     sta penaltySecs
+    sta wingLevel
+    sta pitMenuShown
+    sta pitTimerLo
+    sta pitTimerHi
 
     ; --- la parrilla ---
     ; Se larga desde el puesto que salio de la qualy: orderTable ya viene
@@ -1870,12 +1904,46 @@ RedrawTrack:
 RaceLogic:
     lda padNew
     and #BTN_SEL
-    beq @norm
+    beq @nosel
     jsr EnterClass           ; SELECT: pausa y muestra la clasificacion
+    rts
+@nosel:
+    ; boxes: si estamos comprometidos, no paramos ya y llegamos a la
+    ; distancia del box (ya cruzada la linea, dist chica -- ver
+    ; PIT_BOX_DIST), el menu se abre una sola vez por parada.
+    lda pitTimerHi
+    ora pitTimerLo
+    bne @norm                ; ya estamos parados: no reabrir el menu
+    lda pitCommitted
+    beq @norm
+    lda pitMenuShown
+    bne @norm
+    lda distHi
+    bne @norm
+    lda distLo
+    cmp #PIT_BOX_DIST
+    bcc @norm
+    cmp #PIT_EXIT_LEN
+    bcs @norm
+    lda #1
+    sta pitMenuShown
+    jsr EnterPitMenu
     rts
 @norm:
     jsr UpdateTimer
+    lda pitTimerHi
+    ora pitTimerLo
+    beq @drive
+    ; parado en el box: sin control ni velocidad, pero la IA sigue
+    ; corriendo -- por eso duele de verdad perder puesto durante la parada.
+    lda #0
+    sta spdHi
+    sta spdLo
+    jsr DecPitTimer
+    jmp @aicontinue
+@drive:
     jsr UpdatePlayer
+@aicontinue:
     jsr UpdateScroll
     jsr UpdateTrack
     jsr UpdateDistance
@@ -1886,7 +1954,11 @@ RaceLogic:
     ; distancias de este cuadro) y ANTES de CheckCollisions y BuildOAM, que
     ; son las dos que consumen la lista de autos en pantalla.
     jsr BuildCars
+    lda pitTimerHi
+    ora pitTimerLo
+    bne @nocol                ; parado en el box: no es justo que te choquen
     jsr CheckCollisions
+@nocol:
     jsr EngineSound
     jsr BuildOAM
     rts
@@ -2128,6 +2200,7 @@ UpdatePlayer:
     lda #0
     sta pitCommitted
     sta pitPenalized
+    sta pitMenuShown
 @rtspit:
     rts
 
@@ -2830,6 +2903,38 @@ RecalcCap:
     sta curCapLo
     lda capTabHi,x
     sta curCapHi
+
+    ; ajuste de ala (etapa 3, EnterPitMenu): +1 es MAS ala, achica el tope;
+    ; -1 es MENOS ala, lo agranda. Simplificacion deliberada -- el motor no
+    ; distingue "estoy en una curva" de "estoy en una recta" (genCC se
+    ; corre continuo, sin ese evento), asi que el ala no le da mas agarre
+    ; SOLO en curva como en las reglas: es un ajuste parejo todo el tiempo.
+    lda wingLevel
+    beq @rts
+    bmi @menosala
+    lda curCapLo
+    sec
+    sbc #<WING_STEP
+    sta curCapLo
+    lda curCapHi
+    sbc #>WING_STEP
+    sta curCapHi
+    jmp @clampcap
+@menosala:
+    lda curCapLo
+    clc
+    adc #<WING_STEP
+    sta curCapLo
+    lda curCapHi
+    adc #>WING_STEP
+    sta curCapHi
+@clampcap:
+    lda curCapHi
+    bpl @rts                 ; se fue a negativo (mas ala con desgaste ya
+    lda #0                   ; alto): pisar el piso en 0, no envolver
+    sta curCapHi
+    sta curCapLo
+@rts:
     rts
 
 ; Una vez por vuelta (UpdateDistance, rama @lap). Sube tireWear segun el
@@ -3398,6 +3503,334 @@ ClassLogic:
     and #BTN_SEL
     beq :+
     jsr ExitClass
+:   rts
+
+;=============================================================================
+; MENU DE PARADA (boxes, fase 4 etapa 3)
+;
+; Mismo patron que EnterClass/ClassLogic/ExitClass: pausa la carrera,
+; reusa las nametables del circuito con el rendering apagado, y al salir
+; hay que reconstruir el trazado real (RedrawTrack) porque si no el
+; circuito curvo queda roto.
+;=============================================================================
+pitmenutxt: .byte "BOXES", 0
+
+pmGoma0: .byte "  GOMA: BLANDO", 0
+pmGoma1: .byte "  GOMA: MEDIO ", 0
+pmGoma2: .byte "  GOMA: DURO  ", 0
+pmGomaPtrLo: .byte <pmGoma0, <pmGoma1, <pmGoma2
+pmGomaPtrHi: .byte >pmGoma0, >pmGoma1, >pmGoma2
+
+pmAlaM1: .byte "  ALA: -1", 0
+pmAla0:  .byte "  ALA:  0", 0
+pmAlaP1: .byte "  ALA: +1", 0
+pmAlaPtrLo: .byte <pmAlaM1, <pmAla0, <pmAlaP1
+pmAlaPtrHi: .byte >pmAlaM1, >pmAla0, >pmAlaP1
+
+pmHint: .byte "SUBE/BAJA ELIGE - START OK", 0
+
+; menuWing (0/1/2) -> wingLevel real (con signo)
+WingValTab: .byte $FF, 0, 1
+
+EnterPitMenu:
+    lda scrollLo
+    sta savedScrollLo
+    lda scrollNT
+    sta savedScrollNT
+    lda #0
+    sta scrollLo
+    sta scrollNT
+
+    jsr RenderOff
+
+    lda #<$2000
+    sta ptr
+    lda #>$2000
+    sta ptr+1
+    lda #$20
+    jsr FillNT
+
+    bit PPUSTATUS
+    lda #$23
+    sta PPUADDR
+    lda #$C0
+    sta PPUADDR
+    ldx #64
+    lda #$FF
+:   sta PPUDATA
+    dex
+    bne :-
+
+    lda #<pitmenutxt
+    sta ptr
+    lda #>pitmenutxt
+    sta ptr+1
+    lda #$2C
+    sta tmp3
+    lda #$20
+    sta tmp4
+    jsr DrawText
+
+    lda #<pmHint
+    sta ptr
+    lda #>pmHint
+    sta ptr+1
+    lda #12
+    jsr SetClassAddr
+    lda tmp3
+    clc
+    adc #1
+    sta tmp3
+    jsr DrawText
+
+    ; valores iniciales del menu = los que ya tiene el auto
+    lda tireCompound
+    sta menuCompound
+    lda wingLevel
+    beq @widx1
+    bmi @widx0
+    ldx #2
+    jmp @wdone
+@widx0:
+    ldx #0
+    jmp @wdone
+@widx1:
+    ldx #1
+@wdone:
+    stx menuWing
+    lda #0
+    sta pitCursor
+
+    jsr DrawPitMenu
+
+    ldx #0
+    lda #$FF
+:   sta oam,x
+    inx
+    bne :-
+
+    lda #ST_PITMENU
+    sta gameState
+    jsr RenderOn
+    rts
+
+; Redibuja las dos filas del menu y su cursor. Necesita el rendering
+; apagado -- EnterPitMenu ya lo deja asi, y PitMenuLogic lo apaga/prende a
+; mano alrededor de cada llamada (mismo patron que DrawGomaLine/GridLogic
+; en la parrilla).
+DrawPitMenu:
+    lda #6                   ; cursor de GOMA
+    jsr SetClassAddr
+    lda tmp3
+    clc
+    adc #5
+    sta tmp3
+    bit PPUSTATUS
+    lda tmp4
+    sta PPUADDR
+    lda tmp3
+    sta PPUADDR
+    lda pitCursor
+    bne @nogc
+    lda #'>'
+    bne @putgc
+@nogc:
+    lda #' '
+@putgc:
+    sta PPUDATA
+
+    lda #6                   ; texto de GOMA
+    jsr SetClassAddr
+    lda tmp3
+    clc
+    adc #6
+    sta tmp3
+    ldx menuCompound
+    lda pmGomaPtrLo,x
+    sta ptr
+    lda pmGomaPtrHi,x
+    sta ptr+1
+    jsr DrawText
+
+    lda #8                   ; cursor de ALA
+    jsr SetClassAddr
+    lda tmp3
+    clc
+    adc #5
+    sta tmp3
+    bit PPUSTATUS
+    lda tmp4
+    sta PPUADDR
+    lda tmp3
+    sta PPUADDR
+    lda pitCursor
+    beq @noac
+    lda #'>'
+    bne @putac
+@noac:
+    lda #' '
+@putac:
+    sta PPUDATA
+
+    lda #8                   ; texto de ALA
+    jsr SetClassAddr
+    lda tmp3
+    clc
+    adc #6
+    sta tmp3
+    ldx menuWing
+    lda pmAlaPtrLo,x
+    sta ptr
+    lda pmAlaPtrHi,x
+    sta ptr+1
+    jsr DrawText
+    rts
+
+; Sortea cuanto dura la parada: base PIT_STOP_BASE, con ~1/8 de chance de
+; una parada lenta (PIT_STOP_SLOW_ADD + azar(0..127), unos 5 a 7 segundos
+; mas). La probabilidad "chica" que piden las reglas.
+ApplyPitStop:
+    jsr Rand
+    lda seed
+    and #7
+    bne @normal
+    jsr Rand
+    lda seed
+    and #$7F
+    clc
+    adc #<PIT_STOP_SLOW_ADD
+    sta pitTimerLo
+    lda #0
+    adc #>PIT_STOP_SLOW_ADD
+    sta pitTimerHi
+    rts
+@normal:
+    lda #<PIT_STOP_BASE
+    sta pitTimerLo
+    lda #>PIT_STOP_BASE
+    sta pitTimerHi
+    rts
+
+; Resta 1 a pitTimerLo/Hi (16 bits). Se llama una vez por cuadro mientras
+; la parada dura, nunca lo deja bajar de 0 porque RaceLogic corta el
+; llamado apenas llega.
+DecPitTimer:
+    lda pitTimerLo
+    bne @lo
+    dec pitTimerHi
+@lo:
+    dec pitTimerLo
+    rts
+
+ExitPitMenu:
+    ; aplicar la goma elegida: gomas nuevas, se resetea el desgaste y se
+    ; marca el compuesto como usado (regla de los dos compuestos)
+    lda menuCompound
+    sta tireCompound
+    lda #0
+    sta tireWear
+    lda #1
+    ldx tireCompound
+    beq @gotbit
+@shl:
+    asl a
+    dex
+    bne @shl
+@gotbit:
+    ora usedMask
+    sta usedMask
+    ; aplicar el ala
+    ldx menuWing
+    lda WingValTab,x
+    sta wingLevel
+    jsr RecalcCap
+    jsr ApplyPitStop
+
+    jsr RenderOff
+    jsr RedrawTrack
+    lda savedScrollLo
+    sta scrollLo
+    lda savedScrollNT
+    sta scrollNT
+    lda #ST_RACE
+    sta gameState
+    jsr RenderOn
+    rts
+
+PitMenuLogic:
+    lda padNew
+    and #BTN_UP
+    beq @nodown
+    lda pitCursor
+    eor #1
+    sta pitCursor
+    jmp @redraw
+@nodown:
+    lda padNew
+    and #BTN_DOWN
+    beq @noup
+    lda pitCursor
+    eor #1
+    sta pitCursor
+    jmp @redraw
+@noup:
+    lda padNew
+    and #BTN_LEFT
+    beq @noleft
+    lda pitCursor
+    bne @alaleft
+    lda menuCompound
+    bne @gdec
+    lda #2
+    sta menuCompound
+    jmp @redraw
+@gdec:
+    dec menuCompound
+    jmp @redraw
+@alaleft:
+    lda menuWing
+    bne @wdec
+    lda #2
+    sta menuWing
+    jmp @redraw
+@wdec:
+    dec menuWing
+    jmp @redraw
+@noleft:
+    lda padNew
+    and #BTN_RIGHT
+    beq @noright
+    lda pitCursor
+    bne @alaright
+    lda menuCompound
+    cmp #2
+    bne @ginc
+    lda #0
+    sta menuCompound
+    jmp @redraw
+@ginc:
+    inc menuCompound
+    jmp @redraw
+@alaright:
+    lda menuWing
+    cmp #2
+    bne @winc
+    lda #0
+    sta menuWing
+    jmp @redraw
+@winc:
+    inc menuWing
+@redraw:
+    jsr Blip
+    jsr RenderOff
+    jsr DrawPitMenu
+    jsr RenderOn
+@noright:
+    lda padNew
+    and #BTN_START
+    beq :+
+    jsr Blip
+    jsr ExitPitMenu
 :   rts
 
 ; A = fila de tiles (0..29) -> tmp3/tmp4 = direccion PPU. Siempre en la
