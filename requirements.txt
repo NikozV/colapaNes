@@ -1,0 +1,5 @@
+# Emulador NES headless para los tests (compila un core en C++)
+nes-py==8.2.1
+# nes-py todavia no soporta numpy 2.x
+numpy<2
+pillow

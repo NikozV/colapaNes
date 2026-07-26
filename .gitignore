@@ -1,0 +1,5 @@
+build/
+*.o
+*.nes
+__pycache__/
+*.pyc
