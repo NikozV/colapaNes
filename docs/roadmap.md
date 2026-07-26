@@ -109,3 +109,16 @@ carril.
 Pendiente para cuando existan los boxes (fase 4): la franja angosta que
 sobra deja lugar de sobra para el pit lane, que era el motivo original del
 pedido.
+
+## 7. Sprites sueltos en la pantalla de meta (preexistente, no de fase 4)
+
+`RaceLogic` no corta cuando `UpdateDistance` marca `finished=1` y llama a
+`GoEnd` (que apaga el render, dibuja la pantalla final y oculta todos los
+sprites): sigue de largo y corre `BuildCars`/`BuildOAM` en el mismo cuadro,
+que vuelven a escribir sprites en el buffer de OAM justo despues de que
+`GoEnd` lo limpio. Con trafico cerca en ese instante quedan uno o dos autos
+visibles sobre la pantalla final (se ve en `build/shots/09_meta.png`: el auto
+del jugador queda parpadeando abajo a la izquierda). No rompe nada -- el
+texto se lee igual -- pero es un detalle prolijo pendiente: cortar
+`RaceLogic` con un `rts` apenas `GoEnd` corre, en vez de dejar que seis
+rutinas mas se ejecuten sobre un estado que ya cambio.

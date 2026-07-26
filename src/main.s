@@ -46,7 +46,10 @@ ROAD_L    = 48          ; borde izquierdo del asfalto (px, en coords de pista)
 ROAD_R    = 128         ; x maximo del auto para seguir entero en el asfalto
 MAXSPD_HI = 4           ; velocidad maxima (px/frame)
 LAP_LEN   = 3000        ; unidades de distancia por vuelta
-TOTAL_LAPS = 3
+; 6 y no el "10 por defecto" de las reglas: deja que las tres gomas se
+; sientan distintas (blando ~4 vueltas, duro ~11) sin triplicar el tiempo
+; real de cada corrida de test, que corre sobre el emulador de verdad.
+TOTAL_LAPS = 6
 TRACK_CC  = 12          ; columna del centro del asfalto en la recta
 CC_MIN    = 8           ; el circuito no puede correrse mas alla de estos
 CC_MAX    = 16          ; limites sin invadir la franja del panel
@@ -91,6 +94,33 @@ QTIME_NULA   = $FFFF    ; vuelta anulada o sin completar: se larga ultimo
 ; vuelta. Tiene que ser multiplo de 256 para que sumarlo sea tocar solo el
 ; byte alto.
 QTIME_OFF    = 768
+
+; --- gomas (fase 4) ---
+; Vida util aproximada de cada compuesto en vueltas (docs/reglas-juego.md
+; seccion 5): Blando ~4, Medio ~7, Duro ~11. La tasa de desgaste por vuelta
+; sale de 100/vueltas, redondeado, mas un bonus fijo por cada evento de "al
+; limite" que haya pasado en la vuelta (ver WearTick).
+WEAR_SOFT = 25
+WEAR_MED  = 14
+WEAR_HARD = 9
+WEAR_BONUS_OFFROAD = 6     ; salirse de pista (esto YA incluye el piano, ver
+                            ; WearTick: en esta geometria el piano cae fuera
+                            ; de ROAD_L..ROAD_R igual que el pasto)
+WEAR_BONUS_CRASH   = 10
+WEAR_BONUS_BRAKE   = 5
+HARDBRAKE_SPD = 3          ; spdHi minimo para que frenar cuente como fuerte
+
+; Agarre en % segun compuesto (base) y banda de desgaste (docs/reglas-juego.md
+; seccion 5). La banda 4 (100, pinchado) usa el mismo % que el limite de pit
+; lane: pinchado equivale a manejar el resto de la carrera a paso de boxes.
+SOFT_GRIP = 100
+MED_GRIP  = 94
+HARD_GRIP = 88
+WBAND_0   = 100             ; desgaste 0-49
+WBAND_1   = 95              ; 50-74
+WBAND_2   = 88              ; 75-89
+WBAND_3   = 75              ; 90-99
+WBAND_4   = 60              ; 100, pinchado
 
 T_GRASS_A = $01
 T_GRASS_B = $02
@@ -187,6 +217,16 @@ startRamp:  .res 1          ; cuadros que le quedan a la largada parada
 launchSpd:  .res 1          ; velocidad entera de la IA mientras acelera
 launchTick: .res 1          ; para subir launchSpd cada LAUNCH_STEP cuadros
 
+; gomas (fase 4)
+tireCompound: .res 1        ; 0=blando 1=medio 2=duro
+tireWear:     .res 1        ; 0-100
+usedMask:     .res 1        ; bit0/1/2 = compuesto usado alguna vez esta carrera
+curCapHi:     .res 1        ; tope dinamico de velocidad, 8.8 (formato de spdHi/Lo)
+curCapLo:     .res 1
+lapOffRoad:   .res 1        ; se salio de pista en algun cuadro de esta vuelta
+lapCrash:     .res 1        ; hubo un choque esta vuelta
+lapHardBrake: .res 1        ; freno fuerte a alta velocidad esta vuelta
+
 ; Exportadas para que tools/probe.py pueda leerlas por nombre desde el emulador
 .exportzp gameState, playerX, spdLo, spdHi, distLo, distHi
 .exportzp lapNum, crashT, offRoad, scrollLo, secs, mins, finished
@@ -194,6 +234,7 @@ launchTick: .res 1          ; para subir launchSpd cada LAUNCH_STEP cuadros
 .exportzp plyTotalLo, plyTotalHi, playerPos, oamIdx, scrollNT
 .exportzp lapFrameLo, lapFrameHi, lapValid, offRoadBad, qualyLap
 .exportzp startRamp, launchSpd
+.exportzp tireCompound, tireWear, usedMask, curCapHi, curCapLo
 
 .segment "OAM"
 oam:        .res 256
@@ -257,6 +298,12 @@ teamName1:  .res 11
 teamName2:  .res 11
 
 .export pilotCode0, pilotCode1, pilotCode2, pilotTeam, teamPaceLo, defBonus
+
+; Tope dinamico de velocidad (ver RecalcCap), copiado una vez desde BANK3
+; igual que la tabla de pilotos: 15 entradas, 3 compuestos x 5 bandas de
+; desgaste, indexadas como tireCompound*5 + banda.
+capTabLo:   .res 15
+capTabHi:   .res 15
 
 ;=============================================================================
 ; MMC1
@@ -370,6 +417,15 @@ CopyPilotTable:
     inx
     cpx #11
     bne @teams
+    ldx #0
+@caps:
+    lda capTabLoTab,x
+    sta capTabLo,x
+    lda capTabHiTab,x
+    sta capTabHi,x
+    inx
+    cpx #15
+    bne @caps
     lda #0
     jsr SwitchBank
     rts
@@ -534,6 +590,48 @@ qBaseTab:
 teamName0Tab: .byte "MFRMWARAHAC"
 teamName1Tab: .byte "CEBEISCUALA"
 teamName2Tab: .byte "LRRRLTBDAPD"
+
+; Tope dinamico de velocidad (curCapHi/Lo, 8.8) segun compuesto y banda de
+; desgaste. 15 valores = 3 compuestos x 5 bandas, indexados como
+; tireCompound*5 + banda (ver RecalcCap). Formula resuelta en compilacion,
+; mismo patron que teamPaceLoTab/qBaseTab: MAXSPD_HI son solo 5 valores
+; enteros (0-4), asi que calcular el porcentaje en tiempo real perderia toda
+; la resolucion (una reduccion del 12% da 3.52, que redondea a 3 -- un salto
+; grosero). En 8.8 en cambio hay 256 pasos por unidad entera.
+;
+; valor = MAXSPD_HI*256 * grip_compuesto% * grip_banda% / 10000
+capTabLoTab:
+    .byte <(MAXSPD_HI*256*SOFT_GRIP*WBAND_0/10000)   ; blando, desgaste 0-49
+    .byte <(MAXSPD_HI*256*SOFT_GRIP*WBAND_1/10000)   ; blando, 50-74
+    .byte <(MAXSPD_HI*256*SOFT_GRIP*WBAND_2/10000)   ; blando, 75-89
+    .byte <(MAXSPD_HI*256*SOFT_GRIP*WBAND_3/10000)   ; blando, 90-99
+    .byte <(MAXSPD_HI*256*SOFT_GRIP*WBAND_4/10000)   ; blando, pinchado
+    .byte <(MAXSPD_HI*256*MED_GRIP*WBAND_0/10000)    ; medio, 0-49
+    .byte <(MAXSPD_HI*256*MED_GRIP*WBAND_1/10000)    ; medio, 50-74
+    .byte <(MAXSPD_HI*256*MED_GRIP*WBAND_2/10000)    ; medio, 75-89
+    .byte <(MAXSPD_HI*256*MED_GRIP*WBAND_3/10000)    ; medio, 90-99
+    .byte <(MAXSPD_HI*256*MED_GRIP*WBAND_4/10000)    ; medio, pinchado
+    .byte <(MAXSPD_HI*256*HARD_GRIP*WBAND_0/10000)   ; duro, 0-49
+    .byte <(MAXSPD_HI*256*HARD_GRIP*WBAND_1/10000)   ; duro, 50-74
+    .byte <(MAXSPD_HI*256*HARD_GRIP*WBAND_2/10000)   ; duro, 75-89
+    .byte <(MAXSPD_HI*256*HARD_GRIP*WBAND_3/10000)   ; duro, 90-99
+    .byte <(MAXSPD_HI*256*HARD_GRIP*WBAND_4/10000)   ; duro, pinchado
+capTabHiTab:
+    .byte >(MAXSPD_HI*256*SOFT_GRIP*WBAND_0/10000)
+    .byte >(MAXSPD_HI*256*SOFT_GRIP*WBAND_1/10000)
+    .byte >(MAXSPD_HI*256*SOFT_GRIP*WBAND_2/10000)
+    .byte >(MAXSPD_HI*256*SOFT_GRIP*WBAND_3/10000)
+    .byte >(MAXSPD_HI*256*SOFT_GRIP*WBAND_4/10000)
+    .byte >(MAXSPD_HI*256*MED_GRIP*WBAND_0/10000)
+    .byte >(MAXSPD_HI*256*MED_GRIP*WBAND_1/10000)
+    .byte >(MAXSPD_HI*256*MED_GRIP*WBAND_2/10000)
+    .byte >(MAXSPD_HI*256*MED_GRIP*WBAND_3/10000)
+    .byte >(MAXSPD_HI*256*MED_GRIP*WBAND_4/10000)
+    .byte >(MAXSPD_HI*256*HARD_GRIP*WBAND_0/10000)
+    .byte >(MAXSPD_HI*256*HARD_GRIP*WBAND_1/10000)
+    .byte >(MAXSPD_HI*256*HARD_GRIP*WBAND_2/10000)
+    .byte >(MAXSPD_HI*256*HARD_GRIP*WBAND_3/10000)
+    .byte >(MAXSPD_HI*256*HARD_GRIP*WBAND_4/10000)
 
 ;=============================================================================
 .segment "CODE"
@@ -981,6 +1079,16 @@ GoQualy:
     sta qualyLap             ; 1 = vuelta de salida
     sta lapValid
 
+    ; en la qualy no hay eleccion de compuesto todavia (llega en StartRace):
+    ; se corre con gomas nuevas, tope de velocidad completo.
+    lda #0
+    sta tireCompound
+    sta tireWear
+    sta lapOffRoad
+    sta lapCrash
+    sta lapHardBrake
+    jsr RecalcCap
+
     lda #ST_QUALY
     sta gameState
     jsr RenderOn
@@ -1314,6 +1422,8 @@ gridtxt: .byte "PARRILLA", 0
 GoGrid:
     jsr RenderOff
     jsr SilenceEngine
+    lda #1
+    sta tireCompound         ; arranca en MEDIO; LEFT/RIGHT lo cambia (GridLogic)
     ; UpdateTrack corre antes que QualyDistance en el mismo cuadro, asi que
     ; puede haber dejado una fila del circuito esperando: si no se descarta,
     ; el NMI la escribe encima de la parrilla recien dibujada.
@@ -1460,6 +1570,8 @@ GoGrid:
     inx
     bne :-
 
+    jsr DrawGomaLine
+
     lda #0
     sta scrollLo
     sta scrollNT
@@ -1468,7 +1580,62 @@ GoGrid:
     jsr RenderOn
     rts
 
+; Redibuja la linea de eleccion de compuesto (fila 27: las 22 de la parrilla
+; ocupan la 4-25, asi que queda libre). Necesita el rendering apagado -- se
+; llama con RenderOff ya puesto (GoGrid) o lo pone GridLogic antes de
+; llamarla, porque escribir a PPUDATA con el rendering prendido corrompe la
+; pantalla (ver CLAUDE.md).
+gomaBlando: .byte "GOMA: BLANDO", 0
+gomaMedio:  .byte "GOMA: MEDIO ", 0
+gomaDuro:   .byte "GOMA: DURO  ", 0
+gomaPtrLo: .byte <gomaBlando, <gomaMedio, <gomaDuro
+gomaPtrHi: .byte >gomaBlando, >gomaMedio, >gomaDuro
+
+DrawGomaLine:
+    lda #27
+    jsr SetClassAddr
+    lda tmp3
+    clc
+    adc #4
+    sta tmp3
+    ldx tireCompound
+    lda gomaPtrLo,x
+    sta ptr
+    lda gomaPtrHi,x
+    sta ptr+1
+    jsr DrawText
+    rts
+
 GridLogic:
+    lda padNew
+    and #BTN_LEFT
+    beq @noleft
+    lda tireCompound
+    bne @dec
+    lda #2
+    sta tireCompound
+    jmp @redrawgoma
+@dec:
+    dec tireCompound
+    jmp @redrawgoma
+@noleft:
+    lda padNew
+    and #BTN_RIGHT
+    beq @noright
+    lda tireCompound
+    cmp #2
+    bne @inc
+    lda #0
+    sta tireCompound
+    jmp @redrawgoma
+@inc:
+    inc tireCompound
+@redrawgoma:
+    jsr Blip
+    jsr RenderOff
+    jsr DrawGomaLine
+    jsr RenderOn
+@noright:
     lda padNew
     and #BTN_START
     beq :+
@@ -1509,6 +1676,25 @@ StartRace:
     lda #0
     sta scrollLo
     sta scrollNT
+
+    ; gomas: tireCompound ya viene elegido en la parrilla (GridLogic). Marca
+    ; ese compuesto como usado (regla de los dos compuestos, ver GoEnd) y
+    ; calcula el tope de velocidad inicial.
+    lda #0
+    sta tireWear
+    sta lapOffRoad
+    sta lapCrash
+    sta lapHardBrake
+    lda #1
+    ldx tireCompound
+    beq @gotbit
+@shl:
+    asl a
+    dex
+    bne @shl
+@gotbit:
+    sta usedMask
+    jsr RecalcCap
 
     ; --- la parrilla ---
     ; Se larga desde el puesto que salio de la qualy: orderTable ya viene
@@ -1708,6 +1894,14 @@ UpdatePlayer:
     lda pad1
     and #BTN_B
     beq @coast
+    ; freno fuerte a alta velocidad: aproxima la frenada real sin agregar un
+    ; sensor nuevo (ver WearTick)
+    lda spdHi
+    cmp #HARDBRAKE_SPD
+    bcc @notfuerte
+    lda #1
+    sta lapHardBrake
+@notfuerte:
     ; freno
     lda spdLo
     sec
@@ -1747,12 +1941,20 @@ UpdatePlayer:
     sta spdLo
     jmp @spdok
 @onroad:
+    ; Tope dinamico por gomas (curCapHi/Lo, 8.8), recalculado por WearTick al
+    ; cerrar cada vuelta, nunca por cuadro. Reemplaza la vieja comparacion
+    ; contra la constante MAXSPD_HI.
     lda spdHi
-    cmp #MAXSPD_HI
+    cmp curCapHi
     bcc @spdok
-    lda #MAXSPD_HI
+    bne @clampcap
+    lda spdLo
+    cmp curCapLo
+    bcc @spdok
+@clampcap:
+    lda curCapHi
     sta spdHi
-    lda #0
+    lda curCapLo
     sta spdLo
 @spdok:
 
@@ -1811,6 +2013,7 @@ UpdatePlayer:
 @off:
     lda #1
     sta offRoad
+    sta lapOffRoad          ; se resetea en WearTick, una vez por vuelta
 
     ; Salida FRANCA, la que anula la vuelta de qualy. offRoad marca "una rueda
     ; afuera" (basta que se pase el borde del auto); la regla habla de las
@@ -2429,6 +2632,8 @@ CheckCollisions:
 @crash:
     lda #24
     sta crashT
+    lda #1
+    sta lapCrash             ; se resetea en WearTick, una vez por vuelta
     ; perder la mitad de la velocidad
     lsr spdHi
     ror spdLo
@@ -2459,6 +2664,99 @@ CheckCollisions:
     rts
 
 ;--------------------------------------------------------------- distancia
+;=============================================================================
+; GOMAS
+;=============================================================================
+
+; tireCompound/tireWear -> curCapHi/Lo. Se llama al arrancar la carrera
+; (StartRace) y al cerrar cada vuelta (WearTick): nunca por cuadro, la banda
+; de desgaste cambia como mucho una vez por vuelta.
+RecalcCap:
+    lda tireWear
+    cmp #50
+    bcc @b0
+    lda tireWear
+    cmp #75
+    bcc @b1
+    lda tireWear
+    cmp #90
+    bcc @b2
+    lda tireWear
+    cmp #100
+    bcc @b3
+    lda #4
+    jmp @have
+@b0:
+    lda #0
+    jmp @have
+@b1:
+    lda #1
+    jmp @have
+@b2:
+    lda #2
+    jmp @have
+@b3:
+    lda #3
+@have:
+    sta tmp1                 ; banda 0-4
+    lda tireCompound
+    asl a
+    asl a                    ; *4
+    clc
+    adc tireCompound         ; *5
+    clc
+    adc tmp1                 ; + banda = indice en capTabLo/Hi
+    tax
+    lda capTabLo,x
+    sta curCapLo
+    lda capTabHi,x
+    sta curCapHi
+    rts
+
+; Una vez por vuelta (UpdateDistance, rama @lap). Sube tireWear segun el
+; compuesto (WEAR_SOFT/MED/HARD) mas un bonus fijo por cada evento de "al
+; limite" ocurrido en la vuelta que se cierra: salida de pista (lapOffRoad,
+; que en esta geometria ya incluye el contacto con el piano -- ver ColPal:
+; el piano cae fuera de ROAD_L..ROAD_R igual que el pasto, asi que no hace
+; falta un chequeo aparte), un choque (lapCrash) o una frenada fuerte a alta
+; velocidad (lapHardBrake). Termina recalculando el tope de velocidad.
+WearRateTab: .byte WEAR_SOFT, WEAR_MED, WEAR_HARD
+
+WearTick:
+    ldx tireCompound
+    lda WearRateTab,x
+    sta tmp1
+    lda lapOffRoad
+    beq :+
+    lda tmp1
+    clc
+    adc #WEAR_BONUS_OFFROAD
+    sta tmp1
+:   lda lapCrash
+    beq :+
+    lda tmp1
+    clc
+    adc #WEAR_BONUS_CRASH
+    sta tmp1
+:   lda lapHardBrake
+    beq :+
+    lda tmp1
+    clc
+    adc #WEAR_BONUS_BRAKE
+    sta tmp1
+:   lda tireWear
+    clc
+    adc tmp1
+    cmp #100
+    bcc :+
+    lda #100
+:   sta tireWear
+    lda #0
+    sta lapOffRoad
+    sta lapCrash
+    sta lapHardBrake
+    jmp RecalcCap             ; termina con el rts de RecalcCap
+
 UpdateDistance:
     lda finished
     bne @rts
@@ -2496,6 +2794,7 @@ UpdateDistance:
     sbc #>LAP_LEN
     sta distHi
     inc lapNum
+    jsr WearTick
     jsr ApplyLapVariation
     jsr Blip
     lda lapNum
@@ -3113,6 +3412,29 @@ GoEnd:
     adc #'0'
     sta PPUDATA
 
+    ; regla de los dos compuestos (docs/reglas-juego.md seccion 5): si
+    ; usedMask tiene un solo bit prendido, no se cumplio.
+    lda usedMask
+    cmp #1
+    beq @dq
+    cmp #2
+    beq @dq
+    cmp #4
+    beq @dq
+    jmp @nodq
+@dq:
+    bit PPUSTATUS
+    lda #$22
+    sta PPUADDR
+    lda #$46
+    sta PPUADDR
+    lda #<dqtxt
+    sta ptr
+    lda #>dqtxt
+    sta ptr+1
+    jsr DrawText
+@nodq:
+
     lda #0
     sta scrollLo
     sta scrollNT
@@ -3513,7 +3835,7 @@ txt3: .byte "ALPINE  N 43", 0
 txt4: .byte "PRESS START", 0
 txt5: .byte "A ACELERA   B FRENA", 0
 txt6: .byte "IZQ/DER PARA ESQUIVAR", 0
-txt7: .byte "3 VUELTAS", 0
+txt7: .byte "6 VUELTAS", 0
 
 titlePtrLo: .byte <txt1, <txt2, <txt3, <txt7, <txt4, <txt5, <txt6
 titlePtrHi: .byte >txt1, >txt2, >txt3, >txt7, >txt4, >txt5, >txt6
@@ -3525,6 +3847,7 @@ etxt1: .byte "FIN DE CARRERA", 0
 etxt2: .byte "COLAPINTO EN META", 0
 etxt3: .byte "TIEMPO", 0
 etxt4: .byte "PRESS START", 0
+dqtxt: .byte "DESCALIFICADO: 1 GOMA", 0
 
 endPtrLo: .byte <etxt1, <etxt2, <etxt3, <etxt4
 endPtrHi: .byte >etxt1, >etxt2, >etxt3, >etxt4

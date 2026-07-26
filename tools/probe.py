@@ -470,17 +470,94 @@ for _ in range(600):
         break
 check(g.peek('offRoad') == 0, 'volviendo al asfalto se despenaliza')
 
+print('\n== Gomas ==')
+g = Game()
+g.do_qualy()
+check(g.peek('tireCompound') == 1, f"la parrilla arranca en MEDIO ({g.peek('tireCompound')})")
+g.press(RIGHT)
+g.run(5)
+check(g.peek('tireCompound') == 2, f"RIGHT cambia a DURO ({g.peek('tireCompound')})")
+g.press(RIGHT)
+g.run(5)
+check(g.peek('tireCompound') == 0, f"RIGHT desde DURO da la vuelta a BLANDO ({g.peek('tireCompound')})")
+g.press(LEFT)
+g.run(5)
+check(g.peek('tireCompound') == 2, f"LEFT desde BLANDO da la vuelta a DURO ({g.peek('tireCompound')})")
+
+g.press(START)
+g.run(5)
+check(g.state == ST_RACE, 'START larga con el compuesto elegido')
+check(g.peek('tireCompound') == 2, 'el compuesto elegido en la parrilla llega a la carrera')
+check(g.peek('usedMask') == 0b100, f"usedMask marca el compuesto de partida (usedMask={g.peek('usedMask')})")
+check(g.peek('tireWear') == 0, 'las gomas arrancan sin desgaste')
+
+# tope dinamico = MAXSPD_HI*256 * grip_compuesto% * grip_banda% / 10000,
+# mismo calculo que capTabLoTab/capTabHiTab en src/main.s (banda 0, DURO).
+MAXSPD_HI, HARD_GRIP, WBAND_0 = 4, 88, 100
+cap_esperado = MAXSPD_HI * 256 * HARD_GRIP * WBAND_0 // 10000
+cap_hi, cap_lo = g.peek('curCapHi'), g.peek('curCapLo')
+check(cap_hi * 256 + cap_lo == cap_esperado,
+      f"el tope dinamico sale de la tabla (DURO banda 0 = {cap_hi}.{cap_lo}, "
+      f"esperado {cap_esperado >> 8}.{cap_esperado & 0xFF})")
+
+# manejar solo con A (sin seguir el asfalto) para salirse de pista y
+# acumular desgaste por eso, hasta cerrar una vuelta
+wear_antes = g.peek('tireWear')
+lap_antes = g.peek('lapNum')
+for _ in range(2000):
+    g.run(1, A)
+    if g.peek('lapNum') != lap_antes:
+        break
+wear_despues = g.peek('tireWear')
+check(wear_despues > wear_antes, f"el desgaste sube al cerrar una vuelta ({wear_antes} -> {wear_despues})")
+
+# banda 0 es 0-49: una sola vuelta no alcanza para cruzarla (arriba dio 19),
+# asi que el tope todavia no baja. Seguir unas vueltas mas hasta cruzar de
+# banda y ahi si verificar que el tope baja con el desgaste.
+for _ in range(6000):
+    g.run(1, A)
+    if g.peek('tireWear') >= 50:
+        break
+check(g.peek('tireWear') >= 50, f"el desgaste sigue subiendo con mas vueltas (wear={g.peek('tireWear')})")
+check(g.peek('curCapHi') * 256 + g.peek('curCapLo') < cap_esperado,
+      'el tope de velocidad baja junto con el desgaste')
+
+# en pista (offRoad=0) la velocidad nunca supera el tope dinamico vigente;
+# fuera de pista rige el limite mas estricto que ya prueba 'Salirse de la
+# pista', asi que esos cuadros se saltean aca.
+mal = 0
+for _ in range(300):
+    g.run(1, A)
+    if g.peek('offRoad'):
+        continue
+    spd = g.peek('spdHi') * 256 + g.peek('spdLo')
+    cap = g.peek('curCapHi') * 256 + g.peek('curCapLo')
+    if spd > cap:
+        mal += 1
+check(mal == 0, f"en pista la velocidad nunca supera el tope dinamico ({mal} cuadros mal)")
+
+# regla de los dos compuestos: sin cambiar de goma (todavia no hay boxes,
+# fase 4 etapa 2), usedMask se queda con un solo bit prendido toda la
+# carrera -- la condicion que GoEnd usa para descalificar. La pantalla en
+# si (texto "DESCALIFICADO: 1 GOMA" vs "PRESS START") se verifico a ojo con
+# capturas (make shots), forzando usedMask con y sin un segundo compuesto.
+check(bin(g.peek('usedMask')).count('1') == 1,
+      f"sin boxes, usedMask se queda en un solo compuesto (usedMask={g.peek('usedMask')})")
+
 print('\n== Vueltas y meta ==')
 g = Game()
 g.start_race()
 laps_seen = {g.peek('lapNum')}
-for _ in range(120):
+# TOTAL_LAPS=6 y manejando solo con A (sin seguir el asfalto) las gomas se
+# desgastan rapido -- con el tope de velocidad ya reducido por pinchadura,
+# terminar las 6 vueltas de esta forma tarda unos 8500 cuadros medidos.
+for _ in range(180):
     g.run(60, A)
     laps_seen.add(g.peek('lapNum'))
     if g.state == ST_END:
         break
 check(len(laps_seen) > 1, f'el contador de vueltas avanza (vio {sorted(laps_seen)})')
-check(g.state == ST_END, 'la carrera termina despues de 3 vueltas')
+check(g.state == ST_END, 'la carrera termina despues de 6 vueltas')
 check(g.peek('finished') == 1, 'queda marcada como terminada')
 check(g.screen_stats()['negro'] > 0.9, 'muestra la pantalla final')
 g.shot('test_final')
