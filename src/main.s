@@ -155,6 +155,20 @@ WING_STEP = 51            ; ~0.2 px/cuadro en 8.8 por punto de ala (curCapHi/Lo)
 PIT_STOP_BASE = 150       ; 2.5s a 60 cuadros/seg
 PIT_STOP_SLOW_ADD = 300   ; parada lenta: 300 + azar(0..127), ~5 a 7 segundos
 
+; --- boxes (fase 4 etapa 4): parada abstraida de la IA ---
+; La IA no maneja de verdad (es una formula de distancia, desde la fase 2),
+; asi que no tiene un modelo de gomas completo: en una vuelta al azar, ni
+; las dos primeras ni las dos ultimas (para que no se sienta ni instantanea
+; ni al final sin sentido), cada una sufre un unico evento que le resta el
+; equivalente a una parada de base de su acumulador de distancia. Sin esto
+; la regla de los dos compuestos seria injusta: el jugador pierde ~20s de
+; verdad en una parada real y la IA no perderia nada.
+PIT_STOP_LAP_COUNT = TOTAL_LAPS-4    ; vueltas validas: 3..TOTAL_LAPS-2
+; PIT_STOP_BASE(150 cuadros) * ritmo tipico de la IA (~3.5 unidades/cuadro,
+; ver teamPaceLoTab): no vale la pena un multiplicador por piloto para una
+; abstraccion que ya de por si no simula la parada real.
+AI_PITSTOP_LOSS = 525
+
 T_GRASS_A = $01
 T_GRASS_B = $02
 T_ROAD    = $03
@@ -357,6 +371,13 @@ teamName2:  .res 11
 ; desgaste, indexadas como tireCompound*5 + banda.
 capTabLo:   .res 15
 capTabHi:   .res 15
+
+; Parada abstraida de la IA (fase 4 etapa 4): vuelta (3..TOTAL_LAPS-2) en la
+; que cada IA pierde AI_PITSTOP_LOSS de golpe. Se sortea una vez por
+; carrera en StartRace; PLAYER_SLOT no se usa.
+pitStopLap: .res NUM_DRIVERS
+
+.export pitStopLap
 
 ;=============================================================================
 ; MMC1
@@ -1771,6 +1792,7 @@ StartRace:
     sta pitMenuShown
     sta pitTimerLo
     sta pitTimerHi
+    jsr AssignAIPitLaps
 
     ; --- la parrilla ---
     ; Se larga desde el puesto que salio de la qualy: orderTable ya viene
@@ -3019,6 +3041,61 @@ PitWindowActive:
     lda #0
     rts
 
+; Sortea la vuelta de parada de cada IA (3..TOTAL_LAPS-2, ver
+; PIT_STOP_LAP_COUNT). Se llama una vez por carrera, desde StartRace.
+AssignAIPitLaps:
+    ldx #0
+@lp:
+    cpx #PLAYER_SLOT
+    beq @next
+    jsr Rand
+    lda seed
+    and #$1F                 ; achicar el rango antes de la resta repetida
+@mod:
+    cmp #PIT_STOP_LAP_COUNT
+    bcc @done
+    sec
+    sbc #PIT_STOP_LAP_COUNT
+    jmp @mod
+@done:
+    clc
+    adc #3
+    sta pitStopLap,x
+@next:
+    inx
+    cpx #NUM_DRIVERS
+    bne @lp
+    rts
+
+; Se llama en UpdateDistance, rama @lap, justo despues de "inc lapNum": a
+; cada IA cuya pitStopLap coincida con la vuelta que recien arranca le resta
+; AI_PITSTOP_LOSS de su acumulador de distancia. Como lapNum solo crece y
+; pitStopLap es fijo para toda la carrera, cada IA coincide una sola vez.
+ApplyAIPitStops:
+    ldx #0
+@lp:
+    cpx #PLAYER_SLOT
+    beq @next
+    lda pitStopLap,x
+    cmp lapNum
+    bne @next
+    sec
+    lda totalLo,x
+    sbc #<AI_PITSTOP_LOSS
+    sta totalLo,x
+    lda totalHi,x
+    sbc #>AI_PITSTOP_LOSS
+    sta totalHi,x
+    bcs @next                ; sin underflow: listo
+    lda #0                   ; se fue negativo (poca distancia acumulada
+    sta totalLo,x            ; todavia): pisar el piso en 0
+    sta totalHi,x
+@next:
+    inx
+    cpx #NUM_DRIVERS
+    bne @lp
+    rts
+
 UpdateDistance:
     lda finished
     bne @rts
@@ -3057,6 +3134,7 @@ UpdateDistance:
     sta distHi
     inc lapNum
     jsr WearTick
+    jsr ApplyAIPitStops
     jsr ApplyLapVariation
     jsr Blip
     lda lapNum

@@ -680,6 +680,55 @@ g.run(30, A)
 check(g.peek('spdHi') > 0 or g.peek('spdLo') > 0,
       'terminada la parada el control vuelve solo, sin boton nuevo')
 
+print('\n== Parada abstraida de la IA ==')
+g = Game()
+g.start_race()
+PLAYER_SLOT = 19
+TOTAL_LAPS = 6
+AI_PITSTOP_LOSS = 525   # ver AI_PITSTOP_LOSS en src/main.s
+pitStopLapBase = g.labels['pitStopLap']
+totalLoBase = g.labels['totalLo']
+totalHiBase = g.labels['totalHi']
+laps = [g.peek(pitStopLapBase + i) for i in range(22)]
+ia_laps = [l for i, l in enumerate(laps) if i != PLAYER_SLOT]
+check(all(3 <= l <= TOTAL_LAPS - 2 for l in ia_laps),
+      f'cada IA para en una vuelta del medio, ni las 2 primeras ni las 2 ultimas ({sorted(set(ia_laps))})')
+
+
+def total(g, d):
+    return g.peek(totalHiBase + d) * 256 + g.peek(totalLoBase + d)
+
+
+# medir, para un piloto cualquiera, cuanto avanza por vuelta -- tiene que
+# notarse un pozo justo en su vuelta de parada.
+drv = next(i for i in range(22) if i != PLAYER_SLOT)
+target_lap = laps[drv]
+deltas = {}
+last_lap = g.peek('lapNum')
+last_total = total(g, drv)
+for _ in range(20000):
+    g.run(1, A)
+    if g.peek('lapNum') != last_lap:
+        nuevo_total = total(g, drv)
+        deltas[last_lap] = nuevo_total - last_total
+        last_lap = g.peek('lapNum')
+        last_total = nuevo_total
+    if last_lap > target_lap or g.state != ST_RACE:
+        break
+# ApplyAIPitStops resta justo cuando lapNum PASA a valer target_lap (en la
+# rama @lap de UpdateDistance, junto con "inc lapNum"): el pozo aparece en
+# el delta de la vuelta ANTERIOR (la transicion hacia target_lap), no en la
+# propia target_lap.
+lap_del_pozo = target_lap - 1
+otras = [d for lap, d in deltas.items() if lap != lap_del_pozo]
+check(lap_del_pozo in deltas and otras,
+      f'se pudo medir la vuelta de parada del piloto {drv} (deltas={deltas})')
+if lap_del_pozo in deltas and otras:
+    promedio_otras = sum(otras) / len(otras)
+    check(promedio_otras - deltas[lap_del_pozo] > AI_PITSTOP_LOSS // 2,
+          f'la vuelta de parada pierde distancia de verdad '
+          f'(vuelta {lap_del_pozo}: {deltas[lap_del_pozo]}, resto: {otras})')
+
 print('\n== Vueltas y meta ==')
 g = Game()
 g.start_race()
