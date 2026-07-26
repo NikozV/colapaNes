@@ -10,8 +10,8 @@ LABELS := build/labels.txt
 
 all: $(ROM)
 
-$(ROM): $(OBJ) src/nes.cfg
-	ld65 -C src/nes.cfg $(OBJ) -o $(ROM) -Ln $(LABELS)
+$(ROM): $(OBJ) src/nes-mmc1.cfg
+	ld65 -C src/nes-mmc1.cfg $(OBJ) -o $(ROM) -Ln $(LABELS)
 	@echo "--> $(ROM) ($$(stat -c%s $(ROM)) bytes)"
 
 $(OBJ): src/main.s $(CHR)
