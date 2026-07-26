@@ -30,11 +30,17 @@ Lo que hay hoy en la ROM es la **base del motor**, no el juego final:
 - Pantalla de título → carrera de 3 vueltas → pantalla de meta con el tiempo
 - Acelerador, freno, dirección, penalización por irse al pasto
 - 4 rivales genéricos con carril y velocidad aleatorios, colisiones con rebote
+  (decorativos: no tienen relación con la simulación de posiciones)
 - **Circuito con curvas**, dibujado por filas escritas en el NMI
+- **Los 22 pilotos de la temporada 2026**, simulados por distancia total
+  (tabla en `BANK3`, primer uso real del banking de MMC1). HUD con puesto,
+  ventana móvil de 5 líneas alrededor del tuyo, y clasificación completa con
+  SELECT
 - HUD con vuelta actual y velocidad en km/h
 - Motor por canal de ruido atado a la velocidad, blips de vuelta y choque
 
-No hay todavía: qualy, boxes, gomas, ERS, pilotos reales ni clasificación.
+No hay todavía: qualy, boxes, gomas ni ERS. Sin qualy, los 22 arrancan en
+distancia 0 (largada en punta); el orden real sale de correr, no de un grid.
 
 ## Dos bloqueantes antes de agregar contenido
 
@@ -49,13 +55,17 @@ resumen para no arrancar por el lado equivocado:
    IRQ por línea de barrido, así que el HUD fijo va a tener que salir por
    sprite 0 hit. El detalle está en `src/nes-mmc1.cfg`.
 
-2. **El panel lateral fijo de 22 pilotos no se puede hacer así.** El fondo es
-   una sola capa y hace scroll vertical: cualquier cosa dibujada ahí se mueve
-   con la pista. La solución acordada es una ventana móvil de sprites con los
-   cinco puestos alrededor del tuyo durante la carrera, más la tabla completa de
-   22 en una pantalla aparte con SELECT. Está detallado en las reglas, sección
-   8. No intentar el panel lateral fijo: se necesitarían escrituras a la PPU en
-   el medio de cada línea de barrido.
+2. ~~**El panel lateral fijo de 22 pilotos no se puede hacer así.**~~
+   **Resuelto (fase 2).** El fondo es una sola capa y hace scroll vertical:
+   cualquier cosa dibujada ahí se movería con la pista. Se hizo lo acordado
+   en las reglas, sección 8: una ventana móvil de sprites con los cinco
+   puestos alrededor del tuyo durante la carrera (`BuildRankWindow`), más la
+   tabla completa de 22 en pantalla aparte con SELECT (`EnterClass`), que
+   pausa la carrera y reusa las mismas dos nametables del circuito con
+   rendering apagado — hay que guardar el scroll y reconstruir el trazado
+   real al salir (`RedrawTrack`) porque si no el circuito curvo de la fase 1
+   queda roto. El panel lateral fijo se sigue sin poder hacer, por la misma
+   razón de siempre.
 
 **El ERS ya tiene dónde cargarse**: las curvas están hechas (fase 1), así que
 la dependencia que las ponía temprano en el orden de trabajo está saldada.
@@ -97,6 +107,21 @@ Después de tocar cualquier cosa:
 normal. Las variables visibles son las que están en el bloque `.exportzp` de
 `src/main.s` — si necesitás observar una nueva, agregala ahí y recompilá.
 
+**Ojo con un artefacto de `nes-py` al escribir checks nuevos**: un `env.step()`
+no siempre corresponde a un `WaitFrame` completo del 6502 — ocasionalmente la
+lectura de RAM cae a mitad de una subrutina, entre dos escrituras que en la
+ROM son secuenciales e incondicionales. Se ve clarísimo comparando dos
+variables que se actualizan juntas (por ejemplo `distLo` y `plyTotalLo`, las
+dos en `UpdateDistance`): en <1% de los cuadros aparecen momentáneamente
+desincronizadas, y se resuelven solas al cuadro siguiente sin excepción —
+nunca persiste. Cuanto más larga la subrutina, más ancha esa ventana
+(`UpdatePositions`, con sus 3 pasadas, lo pisa bastante más seguido que
+`UpdateDistance`). No es un bug del juego: es que el "cuadro" que ve Python no
+es exactamente el mismo concepto que el frame de 60 Hz del 6502. Un check que
+compara dos lecturas independientes cuadro a cuadro tiene que tolerar una
+racha corta de desincronización y fallar solo si crece sin límite — ver
+`== Los 22 pilotos ==` en `tools/probe.py` para el patrón.
+
 ## Restricciones del hardware (no negociables)
 
 Estas son las que más se olvidan y las que más bugs generan:
@@ -135,9 +160,22 @@ Estas son las que más se olvidan y las que más bugs generan:
 | `$00`–`$26` | Variables del juego (zeropage, ver `.segment "ZEROPAGE"`) |
 | `$0200`–`$02FF` | Buffer de OAM, se manda por DMA en cada NMI |
 | `$0300`–`$0317` | Arrays de los 4 rivales (x, y 8.8, velocidad, paleta) |
-| `$6000`–`$7FFF` | PRG-RAM del cartucho (segmento `XRAM`, todavía sin usar) |
+| `$6000`–`$7FFF` | PRG-RAM del cartucho (segmento `XRAM`, todavía sin usar — ver nota abajo) |
 | `$8000`–`$BFFF` | Banco conmutable (`BANK0`..`BANK6`), se elige con `SwitchBank` |
 | `$C000`–`$FFFF` | Banco fijo: `CORE`, `CODE`, `RODATA`, `VECTORS` |
+
+**Por qué `XRAM` sigue sin usarse, aunque la fase 2 tenía datos que
+naturalmente irían ahí** (la tabla de 22 pilotos): `nes-py`, el emulador de
+`make test`, solo expone las 2 KB de RAM interna de la consola —
+`RAM_SIZE=$800` del lado de nes-py — y la PRG-RAM del cartucho le es
+invisible. Cualquier variable que viva en `XRAM` no se puede leer con
+`g.peek()` y queda fuera del alcance de `make test`. Por eso la tabla de
+pilotos (copiada desde `BANK3` con `CopyPilotTable`) aterriza en RAM normal
+(`BSS`), no en `XRAM`: `BANK3` se sigue usando de verdad como banco
+conmutable, solo cambia el destino de la copia. Si en el futuro hace falta
+`XRAM` de verdad (el guardado del campeonato, fase 6, sí necesita PRG-RAM con
+pila), esa parte específicamente va a quedar fuera del alcance de `make
+test` y va a haber que verificarla a mano en un emulador de escritorio.
 
 ### Flujo
 
