@@ -196,6 +196,16 @@ ERS_WEAR_THRESHOLD = 75       ; descargar con las gomas mas gastadas que
                                ; esto acelera el desgaste (ver WearTick)
 ERS_WEAR_BONUS = 8
 
+; Uso de la IA: version bien abstraida, reusando la deteccion de defensa
+; que ya existe (UpdateAI, la rama @pelea/DEFEND_RANGE). No se modela "esta
+; en una recta" -- alcanza con que este defendiendo, igual de abstraido que
+; el resto de la IA (defBonus tampoco distingue donde esta en la pista).
+AI_ERS_RECHARGE = 40    ; por vuelta del JUGADOR (misma simplificacion que
+                         ; ApplyLapVariation, que tambien dispara ahi)
+AI_ERS_DRAIN    = 2
+AI_ERS_BONUS    = 10    ; pace extra mientras defiende con energia, ademas
+                         ; de defBonus
+
 T_GRASS_A = $01
 T_GRASS_B = $02
 T_ROAD    = $03
@@ -411,6 +421,13 @@ capTabHi:   .res 15
 pitStopLap: .res NUM_DRIVERS
 
 .export pitStopLap
+
+; Energia de ERS de cada IA (fase 5 etapa 3), 0-100. Recarga por vuelta del
+; jugador (ApplyLapVariation), se consume defendiendo (UpdateAI). PLAYER_SLOT
+; no se usa: la energia del jugador es ersEnergy, en zeropage.
+aiErs:      .res NUM_DRIVERS
+
+.export aiErs
 
 ;=============================================================================
 ; MMC1
@@ -1835,6 +1852,11 @@ StartRace:
     sta ersEnergy
     sta ersActive
     sta lapErsAbuse
+    ldx #0
+:   sta aiErs,x
+    inx
+    cpx #NUM_DRIVERS
+    bne :-
 
     ; --- la parrilla ---
     ; Se larga desde el puesto que salio de la qualy: orderTable ya viene
@@ -3482,6 +3504,20 @@ UpdateAI:
     clc
     adc defBonus,x
     sta tmp1
+    ; ERS: si le queda energia, la usa para defender un poco mas. Version
+    ; bien abstraida (ver AI_ERS_BONUS mas arriba): no simula "esta en una
+    ; recta", alcanza con que este defendiendo.
+    lda aiErs,x
+    beq @sinpelea
+    sec
+    sbc #AI_ERS_DRAIN
+    bcs :+
+    lda #0
+:   sta aiErs,x
+    lda tmp1
+    clc
+    adc #AI_ERS_BONUS
+    sta tmp1
 @sinpelea:
     ; Mientras dura la largada la IA acelera con launchSpd y NADA MAS: sin su
     ; fraccion de ritmo, igual que el jugador, que en esos cuadros solo suma
@@ -3536,6 +3572,15 @@ ApplyLapVariation:
     bcc :+
     lda #210
 :   sta teamPaceLo,x
+    ; ERS: recarga fija por vuelta del jugador (misma simplificacion de
+    ; arriba: no hay una vuelta real por IA para engancharse)
+    lda aiErs,x
+    clc
+    adc #AI_ERS_RECHARGE
+    cmp #101
+    bcc :+
+    lda #100
+:   sta aiErs,x
 @next:
     inx
     cpx #NUM_DRIVERS

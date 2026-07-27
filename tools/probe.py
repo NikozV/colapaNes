@@ -837,6 +837,43 @@ g.run(10, A | UP)
 check(g.peek('lapErsAbuse') == 1,
       'descargar con las gomas por encima del umbral prende lapErsAbuse')
 
+print('\n== ERS: uso de la IA ==')
+# Mismo patron que UpdateAI/@pelea: se pone al rival a la misma distancia
+# que el jugador (dentro de DEFEND_RANGE, asi que defiende) y se compara
+# cuanto avanza con energia llena vs sin energia. El aporte por cuadro es
+# chico a proposito (AI_ERS_BONUS se suma a paceFrac, que solo se nota en
+# la frecuencia de acarreo hacia totalLo/Hi -- mismo mecanismo de punto fijo
+# que ya usa todo el pace de la IA), asi que hace falta promediar sobre
+# varios pilotos para que la señal no se pierda en el ruido de un solo
+# muestreo corto.
+totalLoBase, totalHiBase = g.labels['totalLo'], g.labels['totalHi']
+aiErsBase = g.labels['aiErs']
+
+
+def total_de(game, d):
+    return game.peek(totalHiBase + d) * 256 + game.peek(totalLoBase + d)
+
+
+def avance_defendiendo(energia, drv, frames=40):
+    gg = Game()
+    gg.start_race()
+    gg.run(100, A)              # pasar la largada parada (startRamp)
+    ply = gg.peek('plyTotalHi') * 256 + gg.peek('plyTotalLo')
+    gg.env.ram[totalHiBase + drv] = ply // 256
+    gg.env.ram[totalLoBase + drv] = ply % 256
+    gg.env.ram[aiErsBase + drv] = energia
+    t0 = total_de(gg, drv)
+    gg.run(frames, A)
+    return total_de(gg, drv) - t0
+
+
+pilotos_prueba = [i for i in range(8) if i != PLAYER_SLOT]
+con_energia = sum(avance_defendiendo(100, d) for d in pilotos_prueba)
+sin_energia = sum(avance_defendiendo(0, d) for d in pilotos_prueba)
+check(con_energia > sin_energia,
+      f'defendiendo con energia rinde mas, promediado sobre {len(pilotos_prueba)} '
+      f'pilotos (con={con_energia}, sin={sin_energia})')
+
 print('\n== ERS: HUD ==')
 g = Game()
 g.start_race()
