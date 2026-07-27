@@ -100,7 +100,11 @@ sistema: la qualy tiene consecuencia directa.
   paradas existiera, pero 10 triplica el tiempo real de cada corrida de test
   sobre el emulador. Sigue siendo un parámetro tuneable.
 - Largada parado con semáforo. Adelantarse = penalización de 5 segundos que se
-  suma al tiempo final.
+  suma al tiempo final. **HECHA.** `ST_SEMAPHORE`: 5 luces que se prenden de
+  a una, con una espera al azar antes de apagarlas, y recién ahí se
+  habilita el control — ver `docs/roadmap.md` punto 1 para el detalle de
+  por qué no era solo cosmético (medido, arreglaba una desventaja real de
+  ~3-7 puestos en la largada).
 - Las posiciones se calculan por **distancia total recorrida** (vuelta actual ×
   largo de vuelta + distancia en la vuelta), ordenando los 22 valores.
 - Los autos que no están en pantalla se simulan igual, con su ritmo base más

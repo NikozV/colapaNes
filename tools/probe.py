@@ -14,7 +14,7 @@ sys.path.insert(0, __file__.rsplit('/', 1)[0])
 
 from nes_harness import (Game, A, B, LEFT, RIGHT, UP, DOWN, START, SELECT,
                          ST_TITLE, ST_RACE, ST_END, ST_CLASS, ST_QUALY, ST_GRID,
-                         ST_PITMENU)
+                         ST_PITMENU, ST_SEMAPHORE)
 
 fails = []
 
@@ -134,10 +134,43 @@ check(not malos,
       f'el cronometro en pantalla coincide con los cuadros transcurridos '
       f'({len(malos)} mal{": " + str(malos[:2]) if malos else ""})')
 
-print('\n== Entrar a la carrera ==')
+print('\n== Semaforo de largada ==')
+# Medido con el emulador (antes de este semaforo): arrancando desde la
+# pole con reaccion PERFECTA, el jugador ya caia a P4 en 2 segundos de
+# carrera, porque gameState pasaba a ST_RACE (dispara startRamp/launchSpd
+# de la IA, que no depende de ningun boton) en el mismo cuadro que START
+# en la parrilla. El semaforo resuelve esto por secuenciacion: mientras
+# gameState==ST_SEMAPHORE, RaceLogic no corre, asi que la rampa queda
+# congelada hasta que se apagan las luces -- se verifica aca.
 g.press(START)
 g.run(5)
-check(g.state == ST_RACE, 'START desde la parrilla entra a la carrera')
+check(g.state == ST_SEMAPHORE,
+      'START desde la parrilla entra al semaforo, no a la carrera directo')
+ramp_antes, launch_antes = g.peek('startRamp'), g.peek('launchSpd')
+g.run(60, 0)
+check(g.peek('startRamp') == ramp_antes and g.peek('launchSpd') == launch_antes,
+      f"startRamp/launchSpd no se mueven mientras dura el semaforo "
+      f"({ramp_antes},{launch_antes} -> {g.peek('startRamp')},{g.peek('launchSpd')})")
+
+penalty_antes = g.peek('penaltySecs')
+g.press(A)
+g.run(3)
+check(g.peek('penaltySecs') == penalty_antes + 5,
+      'adelantarse (apretar A) durante el semaforo suma la penalidad')
+g.press(A)
+g.run(3)
+check(g.peek('penaltySecs') == penalty_antes + 5,
+      'la penalidad de adelantarse se suma una sola vez, no de nuevo')
+
+for _ in range(400):
+    g.run(1, A)
+    if g.state == ST_RACE:
+        break
+check(g.state == ST_RACE, 'terminado el semaforo, la carrera arranca sola')
+check(g.peek('startRamp') == ramp_antes,
+      'la rampa arranca en el mismo valor en que quedo congelada')
+
+print('\n== Entrar a la carrera ==')
 check(g.peek('lapNum') == 1, 'empieza en la vuelta 1')
 check(g.peek('playerPos') == pole_jugador,
       f'se larga desde el puesto de la qualy (P{pole_jugador})')
@@ -503,7 +536,8 @@ check(g.peek('tireCompound') == 2, f"LEFT desde BLANDO da la vuelta a DURO ({g.p
 
 g.press(START)
 g.run(5)
-check(g.state == ST_RACE, 'START larga con el compuesto elegido')
+g.cross_semaphore()
+check(g.state == ST_RACE, 'START (y cruzar el semaforo) larga con el compuesto elegido')
 check(g.peek('tireCompound') == 2, 'el compuesto elegido en la parrilla llega a la carrera')
 check(g.peek('usedMask') == 0b100, f"usedMask marca el compuesto de partida (usedMask={g.peek('usedMask')})")
 check(g.peek('tireWear') == 0, 'las gomas arrancan sin desgaste')
@@ -700,14 +734,18 @@ def total(g, d):
 
 
 # medir, para un piloto cualquiera, cuanto avanza por vuelta -- tiene que
-# notarse un pozo justo en su vuelta de parada.
+# notarse un pozo justo en su vuelta de parada. Sigue el asfalto (drive(),
+# no "solo A") para no chocar de mas: desde que las colisiones tambien
+# afectan al rival (CRASH_AI_MINOR/MAJOR_LOSS), chocar de mas metería
+# ruido en TODAS las vueltas, no solo en la de la parada, y taparia la
+# señal que este test quiere aislar.
 drv = next(i for i in range(22) if i != PLAYER_SLOT)
 target_lap = laps[drv]
 deltas = {}
 last_lap = g.peek('lapNum')
 last_total = total(g, drv)
 for _ in range(20000):
-    g.run(1, A)
+    g.drive(1)
     if g.peek('lapNum') != last_lap:
         nuevo_total = total(g, drv)
         deltas[last_lap] = nuevo_total - last_total
@@ -728,6 +766,45 @@ if lap_del_pozo in deltas and otras:
     check(promedio_otras - deltas[lap_del_pozo] > AI_PITSTOP_LOSS // 2,
           f'la vuelta de parada pierde distancia de verdad '
           f'(vuelta {lap_del_pozo}: {deltas[lap_del_pozo]}, resto: {otras})')
+
+print('\n== Colisiones asimetricas ==')
+# Manejar solo con A (sin seguir el asfalto, para chocar seguido) y mirar
+# cada choque: el ratio de velocidad post/pre dice de quien fue la culpa
+# (0.5 = mitad, culpa del jugador; 0.25 = un cuarto, culpa del rival), y
+# eso tiene que coincidir con cuanta distancia perdio el rival involucrado
+# (CRASH_AI_MINOR_LOSS=40 si fue culpa del jugador, CRASH_AI_MAJOR_LOSS=150
+# si fue culpa del rival).
+CRASH_AI_MINOR_LOSS, CRASH_AI_MAJOR_LOSS = 40, 150   # ver src/main.s
+g = Game()
+g.start_race()
+crash_antes = 0
+vistos_culpa_jugador, vistos_culpa_rival = 0, 0
+mal = []
+for _ in range(6000):
+    tot_antes = {j: total(g, j) for j in range(22) if j != PLAYER_SLOT}
+    spd_antes = g.peek('spdHi') * 256 + g.peek('spdLo')
+    g.run(1, A)
+    crash_ahora = g.peek('crashT')
+    if crash_antes == 0 and crash_ahora > 0 and spd_antes > 0:
+        spd_despues = g.peek('spdHi') * 256 + g.peek('spdLo')
+        ratio = spd_despues / spd_antes
+        perdidas = {j: tot_antes[j] - total(g, j) for j in range(22) if j != PLAYER_SLOT}
+        rival, perdida = max(perdidas.items(), key=lambda kv: kv[1])
+        culpa_jugador = ratio > 0.35   # 0.5 (jugador) vs 0.25 (rival), separa al medio
+        esperado = CRASH_AI_MINOR_LOSS if culpa_jugador else CRASH_AI_MAJOR_LOSS
+        if culpa_jugador:
+            vistos_culpa_jugador += 1
+        else:
+            vistos_culpa_rival += 1
+        if abs(perdida - esperado) > 15:   # tolerancia: el rival sigue avanzando su propio pace entre las dos lecturas
+            mal.append((ratio, perdida, esperado))
+    crash_antes = crash_ahora
+    if vistos_culpa_jugador >= 2 and vistos_culpa_rival >= 2:
+        break
+check(vistos_culpa_jugador > 0 and vistos_culpa_rival > 0,
+      f'se vieron choques de los dos tipos (culpa jugador: {vistos_culpa_jugador}, '
+      f'culpa rival: {vistos_culpa_rival})')
+check(not mal, f'la perdida del rival coincide con quien tuvo la culpa ({mal} mal)')
 
 print('\n== ERS: carga ==')
 g = Game()
@@ -751,7 +828,15 @@ else:
 # ventana angosta en src/main.s) y se compara con margen.
 g = Game()
 g.start_race()
-g.drive(900)   # pasar el arranque derecho e ir por curvas de verdad
+# pasar el arranque derecho y buscar activamente un tramo bien curvado
+# (no alcanza con un numero fijo de cuadros: el semaforo corre cuadros
+# antes de largar, asi que un offset fijo ya no cae siempre en el mismo
+# punto del trazado)
+TRACK_CC_ERS = 12   # ver TRACK_CC en src/main.s
+for _ in range(2000):
+    g.drive(1)
+    if abs(g.peek('genCC') - TRACK_CC_ERS) >= 3:
+        break
 
 
 def carga_en(frames, buttons):
@@ -772,20 +857,37 @@ check(e_recta > e_nada,
 
 print('\n== ERS: rebufo ==')
 # No se puede inyectar un auto sintetico (mismo problema de arriba: BuildCars
-# lo pisa dentro del cuadro), asi que se busca el rebufo en trafico real:
-# manejar solo con A (nunca frena, nunca gira) durante varios cuadros y
-# confirmar que la energia sube en algun momento -- si sube sin frenar ni
-# girar, solo puede ser por rebufo.
+# lo pisa dentro del cuadro), asi que se busca el rebufo en trafico real. La
+# ventana es angosta a proposito (ver SLIP_Y_MIN/MAX/X_TOL en src/main.s), y
+# desde que existe el semaforo el piloto automatico "seguir el centro" ya no
+# cae ahi por las suyas con la frecuencia de antes (la largada pareja lo deja
+# solo adelante o atras, no mezclado en el pelicano el tiempo suficiente).
+# Se apunta activamente a un auto que este en la ventana: mismo calculo que
+# BuildOAM/ShiftAtY para pasar sus coordenadas de pista a X de pantalla.
 g = Game()
 g.start_race()
+PLAYER_Y = 168                       # ver PLAYER_Y en src/main.s
+SLIP_Y_MIN, SLIP_Y_MAX, SLIP_X_TOL = 14, 26, 8   # ver src/main.s
+carXAddr, carYAddr = g.labels['carX'], g.labels['carY']
 g.env.ram[g.labels['ersEnergy']] = 0
 subio_por_rebufo = False
-for _ in range(600):
-    g.drive(1, extra=0)   # drive() ya sostiene A; sin extra no frena ni gira mas de lo necesario para seguir el asfalto
+for _ in range(2000):
+    cc_count = g.peek('carCount')
+    obj = None
+    for j in range(cc_count):
+        cy = g.peek(carYAddr + j)
+        dy = PLAYER_Y - cy
+        if SLIP_Y_MIN <= dy <= SLIP_Y_MAX + 6:
+            cx = g.peek(carXAddr + j)
+            fila = ((cy // 8) + g.peek('topRow')) % 60
+            cc = g.peek(CC_BASE + fila)
+            obj = cx + (cc - TRACK_CC) * 8
+            break
+    g.drive(1, target=obj)   # obj=None -> drive() sigue el centro del asfalto
     if g.peek('ersEnergy') > 0:
         subio_por_rebufo = True
         break
-check(subio_por_rebufo, 'en trafico real, ir en el rebufo carga energia sin frenar')
+check(subio_por_rebufo, 'ir en el rebufo de un auto carga energia sin frenar')
 
 print('\n== ERS: descarga ==')
 g = Game()

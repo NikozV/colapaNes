@@ -214,6 +214,21 @@ car_tiles = metasprite(CAR)
 for i, t in enumerate(car_tiles):
     TILES_SPR[0x80 + i] = t
 
+# Luz del semaforo de largada (fase: semaforo). Un circulo solido, color 1:
+# con la paleta 1 (roja, la de los rivales) se ve prendida, con la paleta 2
+# (plateada) se ve apagada -- ninguna paleta nueva, reusa las que ya estan.
+LIGHT = tile([
+ "..1111..",
+ ".111111.",
+ "11111111",
+ "11111111",
+ "11111111",
+ "11111111",
+ ".111111.",
+ "..1111..",
+])
+TILES_SPR[0x84] = LIGHT
+
 # La fuente de SPRITES: letra BLANCA (color 1 = $30) sobre el tile relleno de
 # NEGRO (color 2 = $0F en la paleta 3).
 #
