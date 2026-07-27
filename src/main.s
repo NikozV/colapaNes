@@ -2099,6 +2099,34 @@ UpdatePlayer:
     sta spdHi
 
 @clamp:
+    ; ERS: mantener ARRIBA descarga si hay energia y no se esta en boxes
+    ; (prohibido ahi). Se decide antes del clamp de gomas, que necesita
+    ; saber si usa el tope normal o el boosteado (ver @onroad mas abajo).
+    lda #0
+    sta ersActive
+    lda pitCommitted
+    bne @noers
+    lda ersEnergy
+    beq @noers
+    lda pad1
+    and #BTN_UP
+    beq @noers
+    lda #1
+    sta ersActive
+    lda ersEnergy
+    sec
+    sbc #ERS_DRAIN
+    bcs :+
+    lda #0
+:   sta ersEnergy
+    ; con las gomas mas gastadas que ERS_WEAR_THRESHOLD, descargar acelera
+    ; el desgaste todavia mas (WearTick lo consume al cerrar la vuelta)
+    lda tireWear
+    cmp #ERS_WEAR_THRESHOLD
+    bcc @noers
+    lda #1
+    sta lapErsAbuse
+@noers:
     ; limite segun este o no en pista
     lda offRoad
     beq @onroad
@@ -2111,20 +2139,62 @@ UpdatePlayer:
     sta spdLo
     jmp @spdok
 @onroad:
-    ; Tope dinamico por gomas (curCapHi/Lo, 8.8), recalculado por WearTick al
-    ; cerrar cada vuelta, nunca por cuadro. Reemplaza la vieja comparacion
-    ; contra la constante MAXSPD_HI.
+    ; Tope efectivo en tmp1(hi)/tmp2(lo): el de gomas (curCapHi/Lo, 8.8,
+    ; recalculado por WearTick al cerrar cada vuelta) o, mientras se
+    ; descarga ERS, ese mismo tope +15% aproximado con corrimientos
+    ; (curCap + curCap/8 + curCap/64 =~ 1.14x) en vez de multiplicar en
+    ; tiempo real o armar una tabla nueva -- mismo espiritu que el resto
+    ; del motor.
+    lda curCapHi
+    sta tmp1
+    lda curCapLo
+    sta tmp2
+    lda ersActive
+    beq @capdone
+    lda curCapHi
+    sta tmp3
+    lda curCapLo
+    sta tmp4
+    ldy #3
+:   lsr tmp3
+    ror tmp4
+    dey
+    bne :-
+    lda tmp2
+    clc
+    adc tmp4
+    sta tmp2
+    lda tmp1
+    adc tmp3
+    sta tmp1
+    lda curCapHi
+    sta tmp3
+    lda curCapLo
+    sta tmp4
+    ldy #6
+:   lsr tmp3
+    ror tmp4
+    dey
+    bne :-
+    lda tmp2
+    clc
+    adc tmp4
+    sta tmp2
+    lda tmp1
+    adc tmp3
+    sta tmp1
+@capdone:
     lda spdHi
-    cmp curCapHi
+    cmp tmp1
     bcc @spdok
     bne @clampcap
     lda spdLo
-    cmp curCapLo
+    cmp tmp2
     bcc @spdok
 @clampcap:
-    lda curCapHi
+    lda tmp1
     sta spdHi
-    lda curCapLo
+    lda tmp2
     sta spdLo
 @spdok:
 
@@ -3041,6 +3111,12 @@ WearTick:
     clc
     adc #WEAR_BONUS_BRAKE
     sta tmp1
+:   lda lapErsAbuse
+    beq :+
+    lda tmp1
+    clc
+    adc #ERS_WEAR_BONUS
+    sta tmp1
 :   lda tireWear
     clc
     adc tmp1
@@ -3052,6 +3128,7 @@ WearTick:
     sta lapOffRoad
     sta lapCrash
     sta lapHardBrake
+    sta lapErsAbuse
     jmp RecalcCap             ; termina con el rts de RecalcCap
 
 ;=============================================================================

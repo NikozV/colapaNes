@@ -787,6 +787,56 @@ for _ in range(600):
         break
 check(subio_por_rebufo, 'en trafico real, ir en el rebufo carga energia sin frenar')
 
+print('\n== ERS: descarga ==')
+g = Game()
+g.start_race()
+g.drive(200)
+tope_normal = g.peek('curCapHi') * 256 + g.peek('curCapLo')
+g.env.ram[g.labels['ersEnergy']] = 100
+g.drive(30, extra=UP)
+tope_boosteado = g.peek('spdHi') * 256 + g.peek('spdLo')
+# +15% aproximado con corrimientos: curCap + curCap/8 + curCap/64 (ver
+# RecalcCap-style en UpdatePlayer). Se compara contra la MISMA formula, no
+# contra "tope_normal*1.15", para no reintroducir el redondeo que el motor
+# evita a proposito.
+esperado = tope_normal + tope_normal // 8 + tope_normal // 64
+check(tope_boosteado == esperado,
+      f'el tope boosteado sale de la formula ({tope_boosteado}, esperado {esperado})')
+check(tope_boosteado > tope_normal,
+      f'descargar sube el tope de verdad ({tope_boosteado} > {tope_normal})')
+check(g.peek('ersEnergy') < 100, 'descargar consume energia')
+
+g.env.ram[g.labels['ersEnergy']] = 0
+g.run(10, A | UP)
+check(g.peek('ersActive') == 0, 'sin energia no hay descarga aunque se sostenga ARRIBA')
+
+# no se puede descargar en boxes
+g = Game()
+g.start_race()
+g.env.ram[g.labels['ersEnergy']] = 100
+centro_boxes = 160
+for _ in range(200):
+    g.drive(1, target=centro_boxes)
+    if g.peek('inPit'):
+        break
+check(g.peek('pitCommitted') == 1, 'llego a boxes para probar el bloqueo')
+e0 = g.peek('ersEnergy')
+g.run(20, A | UP)
+check(g.peek('ersEnergy') == e0, f'no se puede descargar comprometido en boxes (energia sigue en {e0})')
+
+# gomas gastadas + descargar = desgaste extra (lapErsAbuse, que WearTick
+# consume al cerrar la vuelta)
+g = Game()
+g.start_race()
+g.drive(200)
+ERS_WEAR_THRESHOLD = 75   # ver ERS_WEAR_THRESHOLD en src/main.s
+g.env.ram[g.labels['tireWear']] = ERS_WEAR_THRESHOLD + 5
+g.env.ram[g.labels['ersEnergy']] = 100
+check(g.peek('lapErsAbuse') == 0, 'lapErsAbuse arranca apagado')
+g.run(10, A | UP)
+check(g.peek('lapErsAbuse') == 1,
+      'descargar con las gomas por encima del umbral prende lapErsAbuse')
+
 print('\n== ERS: HUD ==')
 g = Game()
 g.start_race()
