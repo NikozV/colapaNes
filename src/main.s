@@ -169,6 +169,33 @@ PIT_STOP_LAP_COUNT = TOTAL_LAPS-4    ; vueltas validas: 3..TOTAL_LAPS-2
 ; abstraccion que ya de por si no simula la parada real.
 AI_PITSTOP_LOSS = 525
 
+; --- ERS (fase 5) ---
+; "Estoy en una curva" no existe como evento (genCC se corre continuo, sin
+; entrar/salir de curva -- misma falta que ya documento el ala en boxes).
+; Se aproxima con la propia tabla rowCC: cuanto se corrio el centro del
+; asfalto en el ultimo bloque de atributos (8 filas), la misma tabla que ya
+; usa ShiftAtY/offRoad. Mas delta = curva mas cerrada.
+ERS_MAX = 100
+ERS_CHARGE_CURVE_BASE = 1     ; frenando Y girando (cualquier curvatura)
+ERS_CHARGE_STRAIGHT   = 1     ; frenando SIN girar (recta)
+ERS_CHARGE_SLIP       = 1     ; rebufo, se suma a lo de arriba si corresponde
+; ventana de rebufo: un auto justo adelante (no tan cerca como para chocar,
+; ver el radio de 13px de CheckCollisions, pero pegado -- rebufo real, no
+; "hay un auto en la pantalla") y bien alineado en X. Angosta a proposito:
+; con 5 autos alrededor una ventana ancha entra en carga casi todo el
+; tiempo, y las reglas piden "menos carga" para el rebufo, no comparable a
+; frenar de verdad.
+SLIP_Y_MIN = 14
+SLIP_Y_MAX = 26
+SLIP_X_TOL = 8
+; descarga: tasa fija de consumo y el tope boosteado, +15% aproximado con
+; corrimientos (curCap + curCap/8 + curCap/64 = ~1.14x) en vez de una
+; multiplicacion o una tabla nueva -- mismo espiritu que el resto del motor.
+ERS_DRAIN = 2
+ERS_WEAR_THRESHOLD = 75       ; descargar con las gomas mas gastadas que
+                               ; esto acelera el desgaste (ver WearTick)
+ERS_WEAR_BONUS = 8
+
 T_GRASS_A = $01
 T_GRASS_B = $02
 T_ROAD    = $03
@@ -291,6 +318,11 @@ menuWing:     .res 1        ; 0/1/2 = -1/0/+1, idem
 pitTimerLo:   .res 1        ; cuadros que le quedan a la parada, 16 bits
 pitTimerHi:   .res 1
 
+; ERS (fase 5)
+ersEnergy:    .res 1        ; 0-100
+ersActive:    .res 1        ; se esta descargando este cuadro
+lapErsAbuse:  .res 1        ; descargo con las gomas gastadas esta vuelta
+
 ; Exportadas para que tools/probe.py pueda leerlas por nombre desde el emulador
 .exportzp gameState, playerX, spdLo, spdHi, distLo, distHi
 .exportzp lapNum, crashT, offRoad, scrollLo, secs, mins, finished
@@ -302,6 +334,7 @@ pitTimerHi:   .res 1
 .exportzp inPit, pitCommitted, penaltySecs
 .exportzp wingLevel, pitMenuShown, pitCursor, menuCompound, menuWing
 .exportzp pitTimerLo, pitTimerHi
+.exportzp ersEnergy, ersActive, lapErsAbuse
 
 .segment "OAM"
 oam:        .res 256
@@ -1173,6 +1206,9 @@ GoQualy:
     sta pitMenuShown
     sta pitTimerLo
     sta pitTimerHi
+    sta ersEnergy
+    sta ersActive
+    sta lapErsAbuse
     jsr RecalcCap
 
     lda #ST_QUALY
@@ -1794,6 +1830,12 @@ StartRace:
     sta pitTimerHi
     jsr AssignAIPitLaps
 
+    ; ERS
+    lda #0
+    sta ersEnergy
+    sta ersActive
+    sta lapErsAbuse
+
     ; --- la parrilla ---
     ; Se larga desde el puesto que salio de la qualy: orderTable ya viene
     ; ordenada por tiempo (SortByQualy), asi que el que quedo primero arranca
@@ -1971,6 +2013,8 @@ RaceLogic:
     ora pitTimerLo
     bne @nocol                ; parado en el box: no es justo que te choquen
     jsr CheckCollisions
+    jsr UpdateERS              ; despues de CheckCollisions: necesita el
+                                ; crashT de ESTE cuadro si hubo choque nuevo
 @nocol:
     jsr EngineSound
     jsr BuildOAM
@@ -3096,6 +3140,129 @@ ApplyAIPitStops:
     bne @lp
     rts
 
+;=============================================================================
+; ERS
+;=============================================================================
+
+; Carga: frenando y girando en curva (mas si esta cerrada), frenando sin
+; girar en recta, o rebufo (se suma a lo de arriba, no lo reemplaza). Nada
+; carga fuera de pista ni trompeando. Se llama desde RaceLogic DESPUES de
+; BuildCars: necesita carX/Y/Drv/Count ya armados para el rebufo.
+UpdateERS:
+    lda offRoad
+    beq :+
+    jmp @rts
+:   lda crashT
+    beq :+
+    jmp @rts
+:
+
+    ; fila del jugador en el buffer circular de 60 (misma cuenta que
+    ; ShiftAtY, pero hace falta el INDICE, no el corrimiento en pixeles)
+    lda #(PLAYER_Y>>3)
+    clc
+    adc topRow
+    cmp #60
+    bcc :+
+    sbc #60
+:   sta tmp1
+
+    ; cuanto se corrio el centro contra 8 filas atras (un bloque de
+    ; atributos): el absoluto es "lo cerrada" que esta la curva aca, sin
+    ; necesitar un evento de "entrando/saliendo de curva" que el motor no
+    ; tiene (ver ERS_CHARGE_CURVE_BASE mas arriba)
+    lda tmp1
+    sec
+    sbc #8
+    bcs :+
+    clc
+    adc #60
+:   tax
+    lda rowCC,x
+    sta tmp2
+    ldx tmp1
+    lda rowCC,x
+    sec
+    sbc tmp2
+    bcs :+
+    eor #$FF
+    clc
+    adc #1
+:   sta tmp3                  ; tmp3 = curvatura aca (0 = recta)
+
+    lda #0
+    sta tmp4                  ; acumulador de carga este cuadro
+
+    lda pad1
+    and #BTN_B
+    beq @chkslip               ; no frena: no carga por curva ni por recta
+    lda pad1
+    and #(BTN_LEFT|BTN_RIGHT)
+    beq @straightchg
+    lda #ERS_CHARGE_CURVE_BASE ; --- curva: base + lo cerrada que este ---
+    clc
+    adc tmp3
+    sta tmp4
+    jmp @chkslip
+@straightchg:
+    lda #ERS_CHARGE_STRAIGHT
+    sta tmp4
+
+@chkslip:
+    ; --- rebufo: algun auto de carX/Y adelante y alineado? tmp1/tmp2/tmp3
+    ; ya no hacen falta (curvatura ya se uso), quedan libres. Sin velocidad
+    ; real no hay rebufo (a velocidad 0 no hay estela que aproveche) -- si
+    ; no, con varios autos alrededor la ventana Y/X cae siempre en alguno y
+    ; carga aunque el auto este parado en la largada.
+    lda spdHi
+    bne :+
+    jmp @apply
+:   lda carCount
+    beq @apply
+    jsr PlayerShift
+    sta tmp1
+    lda playerX
+    sec
+    sbc tmp1
+    sta tmp1                  ; jugador en coordenadas de pista
+    ldx #0
+@slp:
+    lda carY,x
+    cmp #PLAYER_Y-SLIP_Y_MAX
+    bcc @slpnext               ; mas alla del rango de rebufo: no cuenta
+    cmp #PLAYER_Y-SLIP_Y_MIN+1
+    bcs @slpnext               ; muy cerca (zona de choque) o detras
+    lda tmp1
+    sec
+    sbc carX,x
+    bcs :+
+    eor #$FF
+    clc
+    adc #1
+:   cmp #SLIP_X_TOL
+    bcs @slpnext
+    lda tmp4
+    clc
+    adc #ERS_CHARGE_SLIP
+    sta tmp4
+    jmp @apply                 ; alcanza con uno: no acumular varios rebufos
+@slpnext:
+    inx
+    cpx carCount
+    bne @slp
+
+@apply:
+    lda tmp4
+    beq @rts
+    clc
+    adc ersEnergy
+    cmp #ERS_MAX+1
+    bcc :+
+    lda #ERS_MAX
+:   sta ersEnergy
+@rts:
+    rts
+
 UpdateDistance:
     lda finished
     bne @rts
@@ -4182,6 +4349,7 @@ BuildOAM:
 
     jsr BuildHud1
     jsr BuildHudRow2
+    jsr BuildHudErs
     jsr BuildRankWindow
 
     ; --- rivales reales (los que estan cerca tuyo en la clasificacion).
@@ -4315,6 +4483,43 @@ BuildHudRow2:
     adc #'0'
     ldx #HUD_X+16
     ldy #16
+    jsr PutChar
+    rts
+
+; --- energia de ERS, "E:100" (fase 5). Y=32: libre entre la velocidad
+; (Y=24) y la ventana de posiciones (Y=48 en adelante), sin compartir
+; scanline con ninguna de las dos.
+BuildHudErs:
+    lda #'E'
+    ldx #HUD_X
+    ldy #32
+    jsr PutChar
+    lda #':'
+    ldx #HUD_X+8
+    ldy #32
+    jsr PutChar
+    lda ersEnergy
+    sta numLo
+    lda #0
+    sta numHi
+    jsr ToDigits
+    lda dig2
+    clc
+    adc #'0'
+    ldx #HUD_X+16
+    ldy #32
+    jsr PutChar
+    lda dig1
+    clc
+    adc #'0'
+    ldx #HUD_X+24
+    ldy #32
+    jsr PutChar
+    lda dig0
+    clc
+    adc #'0'
+    ldx #HUD_X+32
+    ldy #32
     jsr PutChar
     rts
 
