@@ -1145,7 +1145,7 @@ GoTitle:
     pla
     tax
     inx
-    cpx #7
+    cpx #8
     bne @txt
 
     lda #0
@@ -4850,12 +4850,13 @@ txt4: .byte "PRESS START", 0
 txt5: .byte "A ACELERA   B FRENA", 0
 txt6: .byte "IZQ/DER PARA ESQUIVAR", 0
 txt7: .byte "6 VUELTAS", 0
+txt8: .byte "ARRIBA PARA EL TURBO", 0
 
-titlePtrLo: .byte <txt1, <txt2, <txt3, <txt7, <txt4, <txt5, <txt6
-titlePtrHi: .byte >txt1, >txt2, >txt3, >txt7, >txt4, >txt5, >txt6
+titlePtrLo: .byte <txt1, <txt2, <txt3, <txt7, <txt4, <txt5, <txt6, <txt8
+titlePtrHi: .byte >txt1, >txt2, >txt3, >txt7, >txt4, >txt5, >txt6, >txt8
 ; direcciones PPU (fila*32 + col + $2000)
-titleAddrLo: .byte $88, $28, $6B, $0C, $CC, $4A, $89
-titleAddrHi: .byte $20, $21, $21, $22, $22, $23, $23
+titleAddrLo: .byte $88, $28, $6B, $0C, $CC, $4A, $89, $AA
+titleAddrHi: .byte $20, $21, $21, $22, $22, $23, $23, $23
 
 etxt1: .byte "FIN DE CARRERA", 0
 etxt2: .byte "COLAPINTO EN META", 0

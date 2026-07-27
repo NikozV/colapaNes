@@ -137,3 +137,21 @@ del jugador queda parpadeando abajo a la izquierda). No rompe nada -- el
 texto se lee igual -- pero es un detalle prolijo pendiente: cortar
 `RaceLogic` con un `rts` apenas `GoEnd` corre, en vez de dejar que seis
 rutinas mas se ejecuten sobre un estado que ya cambio.
+
+## 9. No hay deteccion de "estoy en una curva"
+
+`genCC` se corre de forma continua (2 columnas por bloque de atributos,
+ver "Por que las curvas son escalonadas" en `CLAUDE.md`), asi que el motor
+nunca tiene un evento de "entrando/saliendo de curva" -- solo una posicion
+que cambia. Dos fases distintas se toparon con esto y lo resolvieron cada
+una por su lado, sin una solucion compartida:
+
+- El ala en boxes (fase 4) queria mas agarre SOLO en curva; se implemento
+  como un ajuste parejo de `curCapHi/Lo` todo el tiempo, sin el matiz.
+- La carga de ERS en curva (fase 5) necesitaba "que tan cerrada" esta la
+  curva; se aproximo con el delta de `rowCC` contra 8 filas atras (un
+  bloque de atributos), que da una medida razonable pero indirecta.
+
+Si aparece una tercera necesidad de esto, vale la pena escribir una
+deteccion real (por ejemplo, un flag que se prenda cuando el delta de
+`rowCC` supera un umbral) en vez de aproximar cada vez distinto.
