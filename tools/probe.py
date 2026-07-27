@@ -729,6 +729,165 @@ if lap_del_pozo in deltas and otras:
           f'la vuelta de parada pierde distancia de verdad '
           f'(vuelta {lap_del_pozo}: {deltas[lap_del_pozo]}, resto: {otras})')
 
+print('\n== ERS: carga ==')
+g = Game()
+g.start_race()
+check(g.peek('ersEnergy') == 0, 'arranca sin energia')
+
+# offRoad y trompeando no cargan nada, aunque se frene y se gire
+g.drive(400, target=0)   # pegado al borde: pasto
+g.run(1)
+if g.peek('offRoad'):
+    e0 = g.peek('ersEnergy')
+    g.run(60, B | LEFT)
+    check(g.peek('ersEnergy') == e0, 'offRoad no carga energia')
+else:
+    print('  --   (no se pudo llegar a offRoad para probarlo aca)')
+
+# Curva vs recta. BuildCars recalcula carX/Y/Count TODOS los cuadros (corre
+# antes que UpdateERS en RaceLogic), asi que no se puede aislar el rebufo
+# escribiendole a mano a esas variables -- se pisan solas dentro del mismo
+# cuadro. En cambio se tolera el ruido del rebufo real (chico, ver la
+# ventana angosta en src/main.s) y se compara con margen.
+g = Game()
+g.start_race()
+g.drive(900)   # pasar el arranque derecho e ir por curvas de verdad
+
+
+def carga_en(frames, buttons):
+    g.env.ram[g.labels['ersEnergy']] = 0
+    g.run(frames, buttons)
+    return g.peek('ersEnergy')
+
+
+e_curva = carga_en(20, B | LEFT)
+e_recta = carga_en(20, B)
+e_nada = carga_en(20, A)
+check(e_curva > 0, f'frenar y girar en curva carga energia (e={e_curva})')
+check(e_recta > 0, f'frenar sin girar en recta carga energia (e={e_recta})')
+check(e_curva > e_recta,
+      f'la curva cerrada carga mas que la recta ({e_curva} > {e_recta})')
+check(e_recta > e_nada,
+      f'frenar en recta carga mas que solo acelerar ({e_recta} > {e_nada})')
+
+print('\n== ERS: rebufo ==')
+# No se puede inyectar un auto sintetico (mismo problema de arriba: BuildCars
+# lo pisa dentro del cuadro), asi que se busca el rebufo en trafico real:
+# manejar solo con A (nunca frena, nunca gira) durante varios cuadros y
+# confirmar que la energia sube en algun momento -- si sube sin frenar ni
+# girar, solo puede ser por rebufo.
+g = Game()
+g.start_race()
+g.env.ram[g.labels['ersEnergy']] = 0
+subio_por_rebufo = False
+for _ in range(600):
+    g.drive(1, extra=0)   # drive() ya sostiene A; sin extra no frena ni gira mas de lo necesario para seguir el asfalto
+    if g.peek('ersEnergy') > 0:
+        subio_por_rebufo = True
+        break
+check(subio_por_rebufo, 'en trafico real, ir en el rebufo carga energia sin frenar')
+
+print('\n== ERS: descarga ==')
+g = Game()
+g.start_race()
+g.drive(200)
+tope_normal = g.peek('curCapHi') * 256 + g.peek('curCapLo')
+g.env.ram[g.labels['ersEnergy']] = 100
+g.drive(30, extra=UP)
+tope_boosteado = g.peek('spdHi') * 256 + g.peek('spdLo')
+# +15% aproximado con corrimientos: curCap + curCap/8 + curCap/64 (ver
+# RecalcCap-style en UpdatePlayer). Se compara contra la MISMA formula, no
+# contra "tope_normal*1.15", para no reintroducir el redondeo que el motor
+# evita a proposito.
+esperado = tope_normal + tope_normal // 8 + tope_normal // 64
+check(tope_boosteado == esperado,
+      f'el tope boosteado sale de la formula ({tope_boosteado}, esperado {esperado})')
+check(tope_boosteado > tope_normal,
+      f'descargar sube el tope de verdad ({tope_boosteado} > {tope_normal})')
+check(g.peek('ersEnergy') < 100, 'descargar consume energia')
+
+g.env.ram[g.labels['ersEnergy']] = 0
+g.run(10, A | UP)
+check(g.peek('ersActive') == 0, 'sin energia no hay descarga aunque se sostenga ARRIBA')
+
+# no se puede descargar en boxes
+g = Game()
+g.start_race()
+g.env.ram[g.labels['ersEnergy']] = 100
+centro_boxes = 160
+for _ in range(200):
+    g.drive(1, target=centro_boxes)
+    if g.peek('inPit'):
+        break
+check(g.peek('pitCommitted') == 1, 'llego a boxes para probar el bloqueo')
+e0 = g.peek('ersEnergy')
+g.run(20, A | UP)
+check(g.peek('ersEnergy') == e0, f'no se puede descargar comprometido en boxes (energia sigue en {e0})')
+
+# gomas gastadas + descargar = desgaste extra (lapErsAbuse, que WearTick
+# consume al cerrar la vuelta)
+g = Game()
+g.start_race()
+g.drive(200)
+ERS_WEAR_THRESHOLD = 75   # ver ERS_WEAR_THRESHOLD en src/main.s
+g.env.ram[g.labels['tireWear']] = ERS_WEAR_THRESHOLD + 5
+g.env.ram[g.labels['ersEnergy']] = 100
+check(g.peek('lapErsAbuse') == 0, 'lapErsAbuse arranca apagado')
+g.run(10, A | UP)
+check(g.peek('lapErsAbuse') == 1,
+      'descargar con las gomas por encima del umbral prende lapErsAbuse')
+
+print('\n== ERS: uso de la IA ==')
+# Mismo patron que UpdateAI/@pelea: se pone al rival a la misma distancia
+# que el jugador (dentro de DEFEND_RANGE, asi que defiende) y se compara
+# cuanto avanza con energia llena vs sin energia. El aporte por cuadro es
+# chico a proposito (AI_ERS_BONUS se suma a paceFrac, que solo se nota en
+# la frecuencia de acarreo hacia totalLo/Hi -- mismo mecanismo de punto fijo
+# que ya usa todo el pace de la IA), asi que hace falta promediar sobre
+# varios pilotos para que la señal no se pierda en el ruido de un solo
+# muestreo corto.
+totalLoBase, totalHiBase = g.labels['totalLo'], g.labels['totalHi']
+aiErsBase = g.labels['aiErs']
+
+
+def total_de(game, d):
+    return game.peek(totalHiBase + d) * 256 + game.peek(totalLoBase + d)
+
+
+def avance_defendiendo(energia, drv, frames=40):
+    gg = Game()
+    gg.start_race()
+    gg.run(100, A)              # pasar la largada parada (startRamp)
+    ply = gg.peek('plyTotalHi') * 256 + gg.peek('plyTotalLo')
+    gg.env.ram[totalHiBase + drv] = ply // 256
+    gg.env.ram[totalLoBase + drv] = ply % 256
+    gg.env.ram[aiErsBase + drv] = energia
+    t0 = total_de(gg, drv)
+    gg.run(frames, A)
+    return total_de(gg, drv) - t0
+
+
+pilotos_prueba = [i for i in range(8) if i != PLAYER_SLOT]
+con_energia = sum(avance_defendiendo(100, d) for d in pilotos_prueba)
+sin_energia = sum(avance_defendiendo(0, d) for d in pilotos_prueba)
+check(con_energia > sin_energia,
+      f'defendiendo con energia rinde mas, promediado sobre {len(pilotos_prueba)} '
+      f'pilotos (con={con_energia}, sin={sin_energia})')
+
+print('\n== ERS: HUD ==')
+g = Game()
+g.start_race()
+g.env.ram[g.labels['ersEnergy']] = 45
+g.run(10)
+oam = g.env.ram[0x200:0x300]
+# la fila del HUD de ERS es la 4ta (V, P, velocidad, ERS): 5 sprites en
+# Y=32, arrancando en el indice (3*ancho de fila anterior)... mas simple:
+# se busca 'E:045' entre los sprites de esa altura (tile+1 = Y real).
+fila_ers = ''.join(chr(oam[i * 4 + 1]) for i in range(64)
+                    if oam[i * 4] == 32 - 1 and oam[i * 4 + 1] != 0xFF)
+check('045' in fila_ers or fila_ers.startswith('E:'),
+      f"el HUD muestra la energia (fila leida: {fila_ers!r})")
+
 print('\n== Vueltas y meta ==')
 g = Game()
 g.start_race()

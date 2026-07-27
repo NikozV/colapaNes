@@ -221,7 +221,7 @@ distancia, desde la fase 2): cada una sortea una única vuelta intermedia y
 en ese cruce pierde de golpe el equivalente a una parada de base, para que
 la regla de los dos compuestos no sea injusta contra el jugador.
 
-## 7. Turbo / Energía (ERS)
+## 7. Turbo / Energía (ERS) — HECHA (fase 5)
 
 Barra de energía de 0 a 100, al estilo del reglamento 2026.
 
@@ -243,9 +243,30 @@ máxima sube un 15 % y la barra baja. Con la barra en cero, no hay turbo.
 - La IA también lo usa, y lo usa para defender: si venís pegado a un rival en
   la recta, lo va a activar.
 
-> **Dependencia importante**: "se carga en las curvas" no se puede implementar
-> hasta que el circuito tenga curvas. Ver `docs/roadmap.md` punto 5 y la
-> sección de fases más abajo.
+> ~~**Dependencia importante**: "se carga en las curvas" no se puede
+> implementar hasta que el circuito tenga curvas.~~ Resuelta desde la fase 1.
+
+**HECHA (fase 5), con simplificaciones documentadas.** Botón de descarga:
+**ARRIBA** (el gesto mas intuitivo de los dos que quedaban libres durante la
+carrera; ABAJO no se usa por ahora). "Estoy en una curva" no es un evento
+que el motor tenga (mismo problema que ya documentó el ala en boxes: `genCC`
+se corre continuo, sin entrar/salir de curva) — se aproxima con la propia
+tabla `rowCC`, midiendo cuánto se corrió el centro del asfalto en el último
+bloque de atributos; ese delta es "lo cerrada" que está la curva y escala
+la carga. El rebufo usa la lista de autos en pantalla que ya arma
+`BuildCars`, con una ventana angosta a propósito: sin eso, con varios autos
+alrededor entraba en carga casi todo el tiempo y dejaba de ser un aporte
+"chico" como piden las reglas. Tampoco carga con el auto quieto (a
+velocidad 0 no hay estela que aprovechar).
+
+El +15 % de la descarga se aproxima con corrimientos (`curCap + curCap/8 +
+curCap/64 ≈ 1.14×`) en vez de multiplicar en tiempo real o armar una tabla
+nueva, mismo espíritu que el resto del motor. El bonus de la IA defendiendo
+se suma al acumulador fraccionario de punto fijo que ya usa todo su pace
+(el mismo patrón de `teamPaceLo`/`paceFrac`): el efecto es real pero chico
+cuadro a cuadro, se nota promediado sobre varias vueltas o varios pilotos,
+no de un cuadro para el otro — coherente con que la IA nunca fue una
+simulación cuadro a cuadro, es una fórmula de distancia desde la fase 2.
 
 ## 8. Clasificación en pantalla — HECHA (fase 2)
 
@@ -433,8 +454,12 @@ menú de parada (`pitStopTimer`, ala); parada abstraída de la IA. Quedó
 afuera la temperatura de las gomas (depende del ERS, fase 5) y el semáforo
 de largada con su penalización (roadmap, no depende de nada de esta fase).
 
-**Fase 5 — ERS.** Carga en curvas y frenadas, descarga por botón, uso
-defensivo de la IA, interacción con el desgaste.
+**Fase 5 — ERS. HECHA.** Detalle completo en la sección 7. Tres etapas:
+carga (curva/recta/rebufo) y el HUD nuevo; descarga (tope +15%, bloqueada
+en boxes, interacción con el desgaste); uso defensivo de la IA. Ahora sí
+queda pendiente la temperatura de las gomas post-parada (sección 5), que
+dependía de que existiera el ERS — ya no hay bloqueante, es trabajo suelto
+para retomar cuando convenga, no una fase propia.
 
 **Fase 6 — Campeonato.** Varias carreras, puntos acumulados, tabla de
 posiciones del campeonato. Necesita guardar partida: PRG-RAM con batería, que

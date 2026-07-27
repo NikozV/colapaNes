@@ -50,11 +50,17 @@ Lo que hay hoy en la ROM es la **base del motor**, no el juego final:
   comprometerse, `pitStopTimer` con la IA corriendo mientras el jugador está
   parado, y la parada abstraída de la IA para que la regla de los dos
   compuestos no sea injusta
+- **ERS**: barra de energía (`ersEnergy`) que carga frenando y girando en
+  curva (más si está cerrada, medido con la propia tabla `rowCC`), frenando
+  en recta, o en el rebufo de otro auto. Se descarga con ARRIBA: sube el
+  tope de velocidad ~15% (`curCap + curCap/8 + curCap/64`, corrimientos) y
+  consume energía; prohibido en boxes; con las gomas gastadas, descargar
+  acelera el desgaste. La IA también la usa para defender (`aiErs`)
 - Motor por canal de ruido atado a la velocidad, blips de vuelta y choque
 
-No hay todavía ERS. De la qualy quedó afuera lo que depende de boxes
-(arrancar en el pit lane y su límite de velocidad) y de las gomas (que
-arranquen frías en la vuelta de salida, que depende del ERS — ver
+De la qualy quedó afuera lo que depende de boxes (arrancar en el pit lane y
+su límite de velocidad) y de las gomas (que arranquen frías en la vuelta de
+salida — el ERS ya no es un bloqueante para esto, es trabajo suelto, ver
 `docs/reglas-juego.md` sección 5).
 
 **El cronómetro de la qualy cuenta cuadros, no segundos.** Las diferencias que
