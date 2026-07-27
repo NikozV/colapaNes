@@ -34,7 +34,8 @@ RIGHT, LEFT, DOWN, UP, START, SELECT, B, A = (
 WATCH = ['gameState', 'playerX', 'spdLo', 'spdHi', 'distLo', 'distHi',
          'lapNum', 'crashT', 'offRoad', 'scrollLo', 'secs', 'mins', 'finished']
 
-ST_TITLE, ST_RACE, ST_END, ST_CLASS, ST_QUALY, ST_GRID, ST_PITMENU = 0, 1, 2, 3, 4, 5, 6
+ST_TITLE, ST_RACE, ST_END, ST_CLASS, ST_QUALY, ST_GRID, ST_PITMENU, ST_SEMAPHORE = \
+    0, 1, 2, 3, 4, 5, 6, 7
 
 
 def load_labels(path=LABELS):
@@ -160,11 +161,28 @@ class Game:
         base = self.labels['orderTable']
         return [self.peek(base + i) for i in range(22)]
 
-    def start_race(self):
-        """Desde el titulo, atraviesa el fin de semana hasta la carrera."""
+    def cross_semaphore(self, reaction=0):
+        """Ya en ST_SEMAPHORE (justo despues de apretar START en la
+        parrilla): espera las luces y sostiene A hasta que largue.
+        `reaction` son los cuadros de demora antes de empezar a sostener A
+        (0 = reaccion perfecta), para simular cuanto tarda un jugador
+        humano en reaccionar."""
+        assert self.state == ST_SEMAPHORE, \
+            f"No estaba en el semaforo (gameState={self.state})"
+        if reaction:
+            self.run(reaction, 0)
+        for _ in range(400):
+            self.run(1, A)
+            if self.state == ST_RACE:
+                break
+        assert self.state == ST_RACE, \
+            f"El semaforo no largo la carrera (gameState={self.state})"
+        return self
+
+    def start_race(self, reaction=0):
+        """Desde el titulo, atraviesa el fin de semana hasta la carrera,
+        cruzando el semaforo (ver cross_semaphore)."""
         self.do_qualy()
         self.press(START)
         self.run(5)
-        assert self.state == ST_RACE, \
-            f"No entro a la carrera (gameState={self.state})"
-        return self
+        return self.cross_semaphore(reaction)

@@ -14,7 +14,7 @@ sys.path.insert(0, __file__.rsplit('/', 1)[0])
 
 from nes_harness import (Game, A, B, LEFT, RIGHT, UP, DOWN, START, SELECT,
                          ST_TITLE, ST_RACE, ST_END, ST_CLASS, ST_QUALY, ST_GRID,
-                         ST_PITMENU)
+                         ST_PITMENU, ST_SEMAPHORE)
 
 fails = []
 
@@ -134,10 +134,43 @@ check(not malos,
       f'el cronometro en pantalla coincide con los cuadros transcurridos '
       f'({len(malos)} mal{": " + str(malos[:2]) if malos else ""})')
 
-print('\n== Entrar a la carrera ==')
+print('\n== Semaforo de largada ==')
+# Medido con el emulador (antes de este semaforo): arrancando desde la
+# pole con reaccion PERFECTA, el jugador ya caia a P4 en 2 segundos de
+# carrera, porque gameState pasaba a ST_RACE (dispara startRamp/launchSpd
+# de la IA, que no depende de ningun boton) en el mismo cuadro que START
+# en la parrilla. El semaforo resuelve esto por secuenciacion: mientras
+# gameState==ST_SEMAPHORE, RaceLogic no corre, asi que la rampa queda
+# congelada hasta que se apagan las luces -- se verifica aca.
 g.press(START)
 g.run(5)
-check(g.state == ST_RACE, 'START desde la parrilla entra a la carrera')
+check(g.state == ST_SEMAPHORE,
+      'START desde la parrilla entra al semaforo, no a la carrera directo')
+ramp_antes, launch_antes = g.peek('startRamp'), g.peek('launchSpd')
+g.run(60, 0)
+check(g.peek('startRamp') == ramp_antes and g.peek('launchSpd') == launch_antes,
+      f"startRamp/launchSpd no se mueven mientras dura el semaforo "
+      f"({ramp_antes},{launch_antes} -> {g.peek('startRamp')},{g.peek('launchSpd')})")
+
+penalty_antes = g.peek('penaltySecs')
+g.press(A)
+g.run(3)
+check(g.peek('penaltySecs') == penalty_antes + 5,
+      'adelantarse (apretar A) durante el semaforo suma la penalidad')
+g.press(A)
+g.run(3)
+check(g.peek('penaltySecs') == penalty_antes + 5,
+      'la penalidad de adelantarse se suma una sola vez, no de nuevo')
+
+for _ in range(400):
+    g.run(1, A)
+    if g.state == ST_RACE:
+        break
+check(g.state == ST_RACE, 'terminado el semaforo, la carrera arranca sola')
+check(g.peek('startRamp') == ramp_antes,
+      'la rampa arranca en el mismo valor en que quedo congelada')
+
+print('\n== Entrar a la carrera ==')
 check(g.peek('lapNum') == 1, 'empieza en la vuelta 1')
 check(g.peek('playerPos') == pole_jugador,
       f'se larga desde el puesto de la qualy (P{pole_jugador})')
@@ -503,7 +536,8 @@ check(g.peek('tireCompound') == 2, f"LEFT desde BLANDO da la vuelta a DURO ({g.p
 
 g.press(START)
 g.run(5)
-check(g.state == ST_RACE, 'START larga con el compuesto elegido')
+g.cross_semaphore()
+check(g.state == ST_RACE, 'START (y cruzar el semaforo) larga con el compuesto elegido')
 check(g.peek('tireCompound') == 2, 'el compuesto elegido en la parrilla llega a la carrera')
 check(g.peek('usedMask') == 0b100, f"usedMask marca el compuesto de partida (usedMask={g.peek('usedMask')})")
 check(g.peek('tireWear') == 0, 'las gomas arrancan sin desgaste')
@@ -751,7 +785,15 @@ else:
 # ventana angosta en src/main.s) y se compara con margen.
 g = Game()
 g.start_race()
-g.drive(900)   # pasar el arranque derecho e ir por curvas de verdad
+# pasar el arranque derecho y buscar activamente un tramo bien curvado
+# (no alcanza con un numero fijo de cuadros: el semaforo corre cuadros
+# antes de largar, asi que un offset fijo ya no cae siempre en el mismo
+# punto del trazado)
+TRACK_CC_ERS = 12   # ver TRACK_CC en src/main.s
+for _ in range(2000):
+    g.drive(1)
+    if abs(g.peek('genCC') - TRACK_CC_ERS) >= 3:
+        break
 
 
 def carga_en(frames, buttons):
@@ -772,20 +814,37 @@ check(e_recta > e_nada,
 
 print('\n== ERS: rebufo ==')
 # No se puede inyectar un auto sintetico (mismo problema de arriba: BuildCars
-# lo pisa dentro del cuadro), asi que se busca el rebufo en trafico real:
-# manejar solo con A (nunca frena, nunca gira) durante varios cuadros y
-# confirmar que la energia sube en algun momento -- si sube sin frenar ni
-# girar, solo puede ser por rebufo.
+# lo pisa dentro del cuadro), asi que se busca el rebufo en trafico real. La
+# ventana es angosta a proposito (ver SLIP_Y_MIN/MAX/X_TOL en src/main.s), y
+# desde que existe el semaforo el piloto automatico "seguir el centro" ya no
+# cae ahi por las suyas con la frecuencia de antes (la largada pareja lo deja
+# solo adelante o atras, no mezclado en el pelicano el tiempo suficiente).
+# Se apunta activamente a un auto que este en la ventana: mismo calculo que
+# BuildOAM/ShiftAtY para pasar sus coordenadas de pista a X de pantalla.
 g = Game()
 g.start_race()
+PLAYER_Y = 168                       # ver PLAYER_Y en src/main.s
+SLIP_Y_MIN, SLIP_Y_MAX, SLIP_X_TOL = 14, 26, 8   # ver src/main.s
+carXAddr, carYAddr = g.labels['carX'], g.labels['carY']
 g.env.ram[g.labels['ersEnergy']] = 0
 subio_por_rebufo = False
-for _ in range(600):
-    g.drive(1, extra=0)   # drive() ya sostiene A; sin extra no frena ni gira mas de lo necesario para seguir el asfalto
+for _ in range(2000):
+    cc_count = g.peek('carCount')
+    obj = None
+    for j in range(cc_count):
+        cy = g.peek(carYAddr + j)
+        dy = PLAYER_Y - cy
+        if SLIP_Y_MIN <= dy <= SLIP_Y_MAX + 6:
+            cx = g.peek(carXAddr + j)
+            fila = ((cy // 8) + g.peek('topRow')) % 60
+            cc = g.peek(CC_BASE + fila)
+            obj = cx + (cc - TRACK_CC) * 8
+            break
+    g.drive(1, target=obj)   # obj=None -> drive() sigue el centro del asfalto
     if g.peek('ersEnergy') > 0:
         subio_por_rebufo = True
         break
-check(subio_por_rebufo, 'en trafico real, ir en el rebufo carga energia sin frenar')
+check(subio_por_rebufo, 'ir en el rebufo de un auto carga energia sin frenar')
 
 print('\n== ERS: descarga ==')
 g = Game()

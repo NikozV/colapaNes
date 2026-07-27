@@ -31,6 +31,7 @@ ST_CLASS  = 3
 ST_QUALY  = 4
 ST_GRID   = 5
 ST_PITMENU = 6
+ST_SEMAPHORE = 7
 
 PLAYER_Y  = 168
 ; GEOMETRIA DEL CIRCUITO
@@ -206,6 +207,26 @@ AI_ERS_DRAIN    = 2
 AI_ERS_BONUS    = 10    ; pace extra mientras defiende con energia, ademas
                          ; de defBonus
 
+; --- semaforo de largada ---
+; Medido con el emulador: arrancando desde la pole con reaccion PERFECTA
+; (acelerar desde el primer cuadro posible), el jugador ya caia a P4 en 2
+; segundos de carrera, porque gameState pasaba a ST_RACE (que dispara
+; startRamp/launchSpd de la IA, sin depender de ningun boton) en el mismo
+; cuadro que START en la parrilla -- sin un "YA" compartido, la IA siempre
+; le saca ventaja al tiempo de reaccion humano. El semaforo resuelve esto
+; por SECUENCIACION, no tocando la rampa: mientras gameState==ST_SEMAPHORE,
+; RaceLogic no corre (nadie llama UpdateAI/UpdatePlayer), asi que
+; startRamp queda congelado hasta que se apagan las luces.
+SEMAPHORE_LIGHTS = 5
+SEMAPHORE_STEP_LEN = 30    ; cuadros entre luz y luz (~0.5s)
+SEMAPHORE_WAIT_BASE = 30   ; espera minima con las 5 prendidas antes de
+                            ; apagar, para que no se pueda memorizar el
+                            ; cuadro exacto (igual que en F1 real)
+SEMAPHORE_WAIT_RAND = 63   ; + azar(0..63)
+JUMPSTART_PENALTY_SECS = 5 ; adelantarse suma esto a penaltySecs (mismo
+                            ; acumulador que ya usa el exceso de velocidad
+                            ; en boxes, sumado una vez al final en GoEnd)
+
 T_GRASS_A = $01
 T_GRASS_B = $02
 T_ROAD    = $03
@@ -333,6 +354,12 @@ ersEnergy:    .res 1        ; 0-100
 ersActive:    .res 1        ; se esta descargando este cuadro
 lapErsAbuse:  .res 1        ; descargo con las gomas gastadas esta vuelta
 
+; semaforo de largada
+semaphoreTick: .res 1       ; cuadros dentro del paso actual
+semaphoreStep: .res 1       ; 0-5, cuantas luces prendidas
+semaphoreWait: .res 1       ; espera extra al azar, sorteada al llegar a 5
+jumpStart:     .res 1       ; ya se conto un arranque adelantado esta sesion
+
 ; Exportadas para que tools/probe.py pueda leerlas por nombre desde el emulador
 .exportzp gameState, playerX, spdLo, spdHi, distLo, distHi
 .exportzp lapNum, crashT, offRoad, scrollLo, secs, mins, finished
@@ -345,6 +372,7 @@ lapErsAbuse:  .res 1        ; descargo con las gomas gastadas esta vuelta
 .exportzp wingLevel, pitMenuShown, pitCursor, menuCompound, menuWing
 .exportzp pitTimerLo, pitTimerHi
 .exportzp ersEnergy, ersActive, lapErsAbuse
+.exportzp semaphoreTick, semaphoreStep, semaphoreWait, jumpStart
 
 .segment "OAM"
 oam:        .res 256
@@ -839,6 +867,10 @@ main:
 :   cmp #ST_PITMENU
     bne :+
     jsr PitMenuLogic
+    jmp main
+:   cmp #ST_SEMAPHORE
+    bne :+
+    jsr SemaphoreLogic
     jmp main
 :   jsr EndLogic
     jmp main
@@ -1779,7 +1811,7 @@ GridLogic:
     and #BTN_START
     beq :+
     jsr Blip
-    jsr StartRace
+    jsr GoSemaphore
 :   rts
 
 ;=============================================================================
@@ -1906,10 +1938,138 @@ StartRace:
     inx
     cpx #NUM_DRIVERS
     bne @pl
+    rts
 
-    lda #ST_RACE
+; Semaforo de largada: arma el estado de la carrera (StartRace hace todo el
+; trabajo salvo pasar a ST_RACE) y muestra las luces apagadas + el auto
+; quieto en la grilla. SemaphoreLogic las va prendiendo y recien cuando se
+; apagan todas pasa a ST_RACE -- ahi arrancan startRamp/launchSpd, en el
+; mismo cuadro para el jugador y para la IA.
+GoSemaphore:
+    jsr StartRace
+    lda #0
+    sta semaphoreTick
+    sta semaphoreStep
+    sta semaphoreWait
+    sta jumpStart
+    jsr BuildSemaphoreOAM
+    lda #ST_SEMAPHORE
     sta gameState
     jsr RenderOn
+    rts
+
+; Arma el OAM del semaforo: el auto del jugador quieto (mismo PutCar que usa
+; BuildOAM) mas las SEMAPHORE_LIGHTS luces, prendidas (paleta 1, roja) hasta
+; semaphoreStep y apagadas (paleta 2, plateada) el resto.
+; Arriba del auto, centradas sobre la pista (no sobre el panel de datos,
+; que arranca en HUD_X): 5 luces separadas 16px, ancho total 80px.
+SEMAPHORE_Y = 40
+SEMAPHORE_X0 = 60
+
+BuildSemaphoreOAM:
+    lda #0
+    sta oamIdx
+
+    lda playerX
+    sta tmp1
+    lda #PLAYER_Y
+    sta tmp2
+    lda #0
+    sta tmp3
+    jsr PutCar
+
+    ldx oamIdx
+    ldy #0
+@lp:
+    lda #SEMAPHORE_Y-1
+    sta oam,x
+    inx
+    lda #$84
+    sta oam,x
+    inx
+    cpy semaphoreStep
+    bcc @on
+    lda #2                   ; apagada: paleta plateada
+    bne @put                 ; siempre: 2 != 0
+@on:
+    lda #1                   ; prendida: paleta roja
+@put:
+    sta oam,x
+    inx
+    tya
+    asl a
+    asl a
+    asl a
+    asl a                    ; y*16, separacion entre luces
+    clc
+    adc #SEMAPHORE_X0
+    sta oam,x
+    inx
+    iny
+    cpy #SEMAPHORE_LIGHTS
+    bne @lp
+    stx oamIdx
+
+    ldx oamIdx
+    lda #$FF
+@clr:
+    sta oam,x
+    inx
+    bne @clr
+    rts
+
+SemaphoreLogic:
+    ; salida adelantada: apretar A antes de que se apaguen todas suma la
+    ; penalidad una sola vez. El auto no se mueve igual (RaceLogic no
+    ; corre en este estado), asi que es una intencion detectada por
+    ; boton, no un movimiento real evitado.
+    lda jumpStart
+    bne @nopenalty
+    lda padNew
+    and #BTN_A
+    beq @nopenalty
+    lda #1
+    sta jumpStart
+    lda penaltySecs
+    clc
+    adc #JUMPSTART_PENALTY_SECS
+    sta penaltySecs
+@nopenalty:
+    inc semaphoreTick
+    lda semaphoreStep
+    cmp #SEMAPHORE_LIGHTS
+    bcs @waiting
+    lda semaphoreTick
+    cmp #SEMAPHORE_STEP_LEN
+    bcc @rts
+    lda #0
+    sta semaphoreTick
+    inc semaphoreStep
+    jsr Blip
+    lda semaphoreStep
+    cmp #SEMAPHORE_LIGHTS
+    bne @redraw
+    ; se acaba de prender la ultima: sortear la espera extra antes de
+    ; apagarlas (que no se pueda memorizar el cuadro exacto)
+    jsr Rand
+    lda seed
+    and #SEMAPHORE_WAIT_RAND
+    clc
+    adc #SEMAPHORE_WAIT_BASE
+    sta semaphoreWait
+@redraw:
+    jsr BuildSemaphoreOAM
+    jmp @rts
+@waiting:
+    lda semaphoreTick
+    cmp semaphoreWait
+    bcc @rts
+    ; GO: RaceLogic arma el OAM de nuevo desde el proximo cuadro, no hace
+    ; falta apagar las luces a mano
+    jsr Blip
+    lda #ST_RACE
+    sta gameState
+@rts:
     rts
 
 ; Dibuja el circuito entero: las 60 filas virtuales de las dos nametables.
