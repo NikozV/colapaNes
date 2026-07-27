@@ -227,6 +227,18 @@ JUMPSTART_PENALTY_SECS = 5 ; adelantarse suma esto a penaltySecs (mismo
                             ; acumulador que ya usa el exceso de velocidad
                             ; en boxes, sumado una vez al final en GoEnd)
 
+; --- colisiones asimetricas ---
+; Antes CheckCollisions solo afectaba al jugador (mitad de velocidad +
+; empujon), sin importar quien choco a quien. Ahora el que tiene la culpa
+; (carY,x contra PLAYER_Y ya dice si el rival estaba adelante o atras)
+; paga mas: si el jugador lo choco por atras, el rival pierde poco
+; (CRASH_AI_MINOR_LOSS) y el jugador se queda con el castigo de siempre;
+; si el rival choco al jugador por atras, el rival pierde mucho
+; (CRASH_AI_MAJOR_LOSS) y el jugador pierde menos velocidad. Mismo patron
+; de resta de 16 bits con piso en 0 que ya usa ApplyAIPitStops.
+CRASH_AI_MINOR_LOSS = 40
+CRASH_AI_MAJOR_LOSS = 150
+
 T_GRASS_A = $01
 T_GRASS_B = $02
 T_ROAD    = $03
@@ -3151,9 +3163,49 @@ CheckCollisions:
     sta crashT
     lda #1
     sta lapCrash             ; se resetea en WearTick, una vez por vuelta
-    ; perder la mitad de la velocidad
+
+    ; De quien es la culpa: carY,x ya dice si el rival estaba adelante o
+    ; atras en el momento del choque. Si estaba adelante (carY < PLAYER_Y),
+    ; el jugador lo choco por atras -- su culpa: se queda el castigo de
+    ; siempre (mitad de velocidad) y el rival pierde poco. Si estaba atras
+    ; o parejo, fue el rival el que choco al jugador -- el jugador pierde
+    ; menos (un cuarto) y el rival paga el precio principal.
+    ldy carDrv,x              ; piloto del auto chocado, para totalLo/Hi
+    lda carY,x
+    cmp #PLAYER_Y
+    bcc @culpaJugador
+    ; culpa del rival: velocidad a un cuarto (mitad dos veces) y perdida
+    ; grande de distancia para el
     lsr spdHi
     ror spdLo
+    lsr spdHi
+    ror spdLo
+    lda #<CRASH_AI_MAJOR_LOSS
+    sta tmp1
+    lda #>CRASH_AI_MAJOR_LOSS
+    sta tmp2
+    jmp @restarrival
+@culpaJugador:
+    lsr spdHi
+    ror spdLo
+    lda #<CRASH_AI_MINOR_LOSS
+    sta tmp1
+    lda #>CRASH_AI_MINOR_LOSS
+    sta tmp2
+@restarrival:
+    sec
+    lda totalLo,y
+    sbc tmp1
+    sta totalLo,y
+    lda totalHi,y
+    sbc tmp2
+    sta totalHi,y
+    bcs @norival              ; sin underflow: listo
+    lda #0                    ; se fue negativo: pisar el piso en 0
+    sta totalLo,y
+    sta totalHi,y
+@norival:
+
     ; Empujar al costado. De que lado quedo se decide en coordenadas de pista
     ; (tmp3), pero el empujon se aplica sobre la X de pantalla.
     lda tmp3

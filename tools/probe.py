@@ -734,14 +734,18 @@ def total(g, d):
 
 
 # medir, para un piloto cualquiera, cuanto avanza por vuelta -- tiene que
-# notarse un pozo justo en su vuelta de parada.
+# notarse un pozo justo en su vuelta de parada. Sigue el asfalto (drive(),
+# no "solo A") para no chocar de mas: desde que las colisiones tambien
+# afectan al rival (CRASH_AI_MINOR/MAJOR_LOSS), chocar de mas metería
+# ruido en TODAS las vueltas, no solo en la de la parada, y taparia la
+# señal que este test quiere aislar.
 drv = next(i for i in range(22) if i != PLAYER_SLOT)
 target_lap = laps[drv]
 deltas = {}
 last_lap = g.peek('lapNum')
 last_total = total(g, drv)
 for _ in range(20000):
-    g.run(1, A)
+    g.drive(1)
     if g.peek('lapNum') != last_lap:
         nuevo_total = total(g, drv)
         deltas[last_lap] = nuevo_total - last_total
@@ -762,6 +766,45 @@ if lap_del_pozo in deltas and otras:
     check(promedio_otras - deltas[lap_del_pozo] > AI_PITSTOP_LOSS // 2,
           f'la vuelta de parada pierde distancia de verdad '
           f'(vuelta {lap_del_pozo}: {deltas[lap_del_pozo]}, resto: {otras})')
+
+print('\n== Colisiones asimetricas ==')
+# Manejar solo con A (sin seguir el asfalto, para chocar seguido) y mirar
+# cada choque: el ratio de velocidad post/pre dice de quien fue la culpa
+# (0.5 = mitad, culpa del jugador; 0.25 = un cuarto, culpa del rival), y
+# eso tiene que coincidir con cuanta distancia perdio el rival involucrado
+# (CRASH_AI_MINOR_LOSS=40 si fue culpa del jugador, CRASH_AI_MAJOR_LOSS=150
+# si fue culpa del rival).
+CRASH_AI_MINOR_LOSS, CRASH_AI_MAJOR_LOSS = 40, 150   # ver src/main.s
+g = Game()
+g.start_race()
+crash_antes = 0
+vistos_culpa_jugador, vistos_culpa_rival = 0, 0
+mal = []
+for _ in range(6000):
+    tot_antes = {j: total(g, j) for j in range(22) if j != PLAYER_SLOT}
+    spd_antes = g.peek('spdHi') * 256 + g.peek('spdLo')
+    g.run(1, A)
+    crash_ahora = g.peek('crashT')
+    if crash_antes == 0 and crash_ahora > 0 and spd_antes > 0:
+        spd_despues = g.peek('spdHi') * 256 + g.peek('spdLo')
+        ratio = spd_despues / spd_antes
+        perdidas = {j: tot_antes[j] - total(g, j) for j in range(22) if j != PLAYER_SLOT}
+        rival, perdida = max(perdidas.items(), key=lambda kv: kv[1])
+        culpa_jugador = ratio > 0.35   # 0.5 (jugador) vs 0.25 (rival), separa al medio
+        esperado = CRASH_AI_MINOR_LOSS if culpa_jugador else CRASH_AI_MAJOR_LOSS
+        if culpa_jugador:
+            vistos_culpa_jugador += 1
+        else:
+            vistos_culpa_rival += 1
+        if abs(perdida - esperado) > 15:   # tolerancia: el rival sigue avanzando su propio pace entre las dos lecturas
+            mal.append((ratio, perdida, esperado))
+    crash_antes = crash_ahora
+    if vistos_culpa_jugador >= 2 and vistos_culpa_rival >= 2:
+        break
+check(vistos_culpa_jugador > 0 and vistos_culpa_rival > 0,
+      f'se vieron choques de los dos tipos (culpa jugador: {vistos_culpa_jugador}, '
+      f'culpa rival: {vistos_culpa_rival})')
+check(not mal, f'la perdida del rival coincide con quien tuvo la culpa ({mal} mal)')
 
 print('\n== ERS: carga ==')
 g = Game()

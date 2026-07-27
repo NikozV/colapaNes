@@ -7,17 +7,24 @@
 Ordenadas de menos a mas invasivas. Las primeras no tocan el motor; las
 ultimas lo reescriben.
 
-## 1. Largada con semaforo
+## 1. Largada con semaforo — HECHA
 
-Estado nuevo entre la parrilla y la carrera: tres luces rojas que se apagan,
-con blips en el canal de pulso, y recien ahi se habilita el control.
-Baratisimo: son cuatro sprites y un contador. Bonus: penalizar la largada
-adelantada.
+Nuevo estado `ST_SEMAPHORE` entre la parrilla y la carrera: 5 luces (sprites,
+mismas paletas de rival roja/plateada) que se prenden de a una cada ~0.5s,
+con una espera extra al azar antes de apagarlas (que no se pueda memorizar
+el cuadro exacto), y recien ahi se habilita el control.
 
-La MECANICA de largada parada ya existe desde la fase 3 (`startRamp` /
-`launchSpd` en `UpdateAI`): el jugador arranca detenido y la IA acelera con la
-misma curva, asi que la largada es pareja. Lo que falta es solo la parte
-visual del semaforo y la penalizacion por adelantarse.
+No era solo cosmetico: medido con el emulador, sin el semaforo el jugador
+caia de la pole a P4-P8 en los primeros 2 segundos de carrera aunque
+reaccionara perfecto, porque `gameState` pasaba a `ST_RACE` (dispara
+`startRamp`/`launchSpd` de la IA, que no depende de ningun boton) en el
+mismo cuadro que START en la parrilla — sin un "YA" compartido, la IA
+siempre le sacaba ventaja al tiempo de reaccion humano. Con el semaforo,
+`RaceLogic` no corre mientras dura (nadie llama `UpdateAI`/`UpdatePlayer`),
+asi que `startRamp` queda congelado y arranca parejo para los dos en el
+mismo cuadro. Apretar A antes de tiempo suma la penalizacion de 5s
+(`penaltySecs`, el mismo acumulador que ya usa el exceso de velocidad en
+boxes).
 
 ## 2. Musica
 
@@ -155,3 +162,37 @@ una por su lado, sin una solucion compartida:
 Si aparece una tercera necesidad de esto, vale la pena escribir una
 deteccion real (por ejemplo, un flag que se prenda cuando el delta de
 `rowCC` supera un umbral) en vez de aproximar cada vez distinto.
+
+## 10. Colisiones asimetricas — HECHA
+
+`CheckCollisions` antes solo afectaba al jugador (mitad de velocidad +
+empujon), sin importar quien choco a quien: jugando se sentia injusto en
+las dos direcciones (chocar a alguien por atras o que te choquen a vos por
+atras costaba exactamente lo mismo, y el rival nunca perdia nada). Ahora
+`carY,x` contra `PLAYER_Y` (que `CheckCollisions` ya calculaba) decide de
+quien es la culpa: si el rival estaba adelante, lo choco el jugador --
+mismo castigo de siempre para el jugador (mitad de velocidad) y una
+perdida chica de distancia para el rival (`CRASH_AI_MINOR_LOSS`); si el
+rival estaba atras o parejo, choco el al jugador -- el jugador pierde
+menos velocidad (un cuarto) y el rival pierde una distancia grande
+(`CRASH_AI_MAJOR_LOSS`), mismo patron de resta de 16 bits con piso en 0
+que ya usaba `ApplyAIPitStops`.
+
+## 11. Banda de renderizado a mitad de cuadro en la pantalla final (rara,
+preexistente)
+
+Ocasionalmente, en la transicion de la carrera a `GoEnd`, aparece una
+franja horizontal con contenido viejo de la pista (grava/piano) en el
+medio de la pantalla final en vez de negro puro -- se vio reproducible con
+la secuencia exacta de `tools/shots.py` despues de agregar el semaforo
+(`build/shots/09_meta.png`), aunque no es nuevo: es la misma familia de
+problema que el punto 8 (`RaceLogic` sigue ejecutando cosas despues de que
+`GoEnd` ya cambio de estado), pero de fondo en vez de sprites. `RenderOff`
+apaga el PPU al instante en que se ejecuta, no en el proximo vblank: si
+`GoEnd` corre a mitad de un cuadro que la PPU ya empezo a dibujar, las
+scanlines que ya paso muestran el contenido viejo y el resto arranca en
+negro recien ahi -- una sola captura despues cae en un cuadro completo, por
+eso no se ve siempre. No hace fallar ningun test (`screen_stats()['negro']
+> 0.9` sigue cumpliendose). Mismo arreglo que el punto 8 lo resolveria:
+cortar en seco apenas cambia el estado, en vez de dejar que seis rutinas
+mas corran sobre un cuadro que ya no es el que muestran.
